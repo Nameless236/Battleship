@@ -10,6 +10,7 @@ void initialize_board(GameBoard *board) {
             board->grid[i][j] = 0;  // Water
         }
     }
+    board->ships_remaining = 0;
 }
 
 int place_ship(GameBoard *board, int x, int y, int length, char orientation) {
