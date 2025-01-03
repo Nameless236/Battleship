@@ -9,7 +9,7 @@
 int connect_to_server(const char *server_ip, int port);
 
 // Posiela správu na server
-void send_message(const char *client_fifo, const char *message);
+void send_message(const char *path, const char *message);
 
 // Prijíma správu od servera
 void receive_message(const char *client_fifo, char *buffer, size_t buffer_size);

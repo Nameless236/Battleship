@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -22,4 +23,10 @@ void handle_client(int client_socket);
 
 // Posiela správu všetkým klientom okrem jedného
 void broadcast_message(const char *message, int exclude_client);
+
+// Prijima správu na daný file descriptor
+void receive_message(const char *path, char *buffer, size_t buffer_size);
+
+// Posiela správu klientovi
+void send_message(const char *path, const char *message);
 
