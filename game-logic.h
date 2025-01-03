@@ -5,7 +5,9 @@
 // Štruktúra hernej mriežky
 typedef struct {
     int grid[10][10]; // 0 = prázdne, 1 = loď, 2 = zásah, 3 = minutie
+    int ships_remaining; // Počet zostávajúcich lodí
 } GameBoard;
+
 
 // Štruktúra hráča
 typedef struct {
