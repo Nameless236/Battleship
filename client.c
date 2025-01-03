@@ -1,5 +1,6 @@
 #include "klient.h"
 #include "pipe.h"
+#include <stdio.h>
 
 int connect_to_server(const char *server_ip, int port) {
     char pipe_path[256];
