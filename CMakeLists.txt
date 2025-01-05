@@ -7,5 +7,14 @@ project(
         LANGUAGES C
 )
 
-add_executable(battleship main.c)
-target_sources(battleship PRIVATE main.c)
+# Klient
+add_executable(client client.c pipe.c main.c)
+target_compile_definitions(client PRIVATE CLIENT)
+
+# Server
+add_executable(server server.c pipe.c game-logic.c main.c)
+target_compile_definitions(server PRIVATE SERVER)
+
+# Pridanie pthread pre server
+find_package(Threads REQUIRED)
+target_link_libraries(server PRIVATE Threads::Threads)

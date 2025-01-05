@@ -14,3 +14,4 @@ void send_message(const char *path, const char *message);
 // Prijíma správu od servera
 void receive_message(const char *client_fifo, char *buffer, size_t buffer_size);
 
+void play_game(const char *server_fifo, const char *client_fifo);

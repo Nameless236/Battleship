@@ -9,11 +9,19 @@
 
 
 void pipe_init(const char *path) {
-  if (mkfifo(path, S_IRUSR | S_IWUSR | S_IWGRP | S_IRGRP) == -1) {
+  if (access(path, F_OK) == 0) { // Kontrola existencie FIFO
+    if (unlink(path) == -1) {  // Odstránenie starého FIFO
+      perror("Failed to unlink existing FIFO");
+      exit(EXIT_FAILURE);
+    }
+  }
+
+  if (mkfifo(path, S_IRUSR | S_IWUSR | S_IWGRP | S_IRGRP) == -1) { // Vytvorenie FIFO
     perror("Failed to create named pipe");
     exit(EXIT_FAILURE);
   }
 }
+
 
 void pipe_destroy(const char *path) {
   if (unlink(path) == -1) {

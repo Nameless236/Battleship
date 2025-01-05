@@ -9,8 +9,14 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <dispatch/dispatch.h>
 
-extern sem_t fifo_semaphore;
+extern dispatch_semaphore_t fifo_semaphore; // Deklarácia natívneho semaforu
+
+typedef struct {
+    char fifo_path[256];
+    int client_id;
+} ClientData;
 
 // Inicializuje server na danom porte
 void initialize_server(void);
@@ -19,7 +25,7 @@ void initialize_server(void);
 void accept_connection(void);
 
 // Spracováva komunikáciu s klientom
-void handle_client(int client_socket);
+void handle_client(void *arg);
 
 // Posiela správu všetkým klientom okrem jedného
 void broadcast_message(const char *message, int exclude_client);

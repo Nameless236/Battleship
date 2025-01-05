@@ -5,71 +5,74 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <dispatch/dispatch.h>
 
-#define SERVER_FIFO_PATH "server_fifo"
+#define SERVER_FIFO_PATH "/tmp/server_fifo"
 #define CLIENT_FIFO_TEMPLATE "client_fifo_%d"
 #define MAX_CLIENTS 2
 
-void handle_client(int client_socket) {
-    GameBoard board;
-    initialize_board(&board);
-    char buffer[1024];
-    char response[1024];
+dispatch_semaphore_t fifo_semaphore = NULL;
 
-    // Dynamicky generované cesty pre FIFO
-    char client_read_path[256], client_write_path[256];
-    snprintf(client_read_path, sizeof(client_read_path), "/tmp/client_%d_read", client_socket);
-    snprintf(client_write_path, sizeof(client_write_path), "/tmp/client_%d_write", client_socket);
-
-    // Inicializácia dátovodov
-    pipe_init(client_read_path);
-    pipe_init(client_write_path);
-
-    int read_fd = pipe_open_read(client_read_path);
-    int write_fd = pipe_open_write(client_write_path);
-
-    if (read_fd == -1 || write_fd == -1) {
-        perror("Failed to open client FIFOs");
-        pipe_destroy(client_read_path);
-        pipe_destroy(client_write_path);
-        return;
-    }
+void run_server() {
+    initialize_server();
 
     while (1) {
-        // Prijatie správy od klienta
-        receive_message(client_read_path, buffer, sizeof(buffer));
+        printf("Waiting for client connection...\n");
+        accept_connection(); // Spracovanie pripojení klientov
+    }
+}
 
-        // Spracovanie príkazu
+void handle_client(void *arg) {
+    ClientData *client_data = (ClientData *)arg;
+    char buffer[1024];
+    char response[1024];
+    GameBoard board;
+
+    initialize_board(&board);
+
+    printf("Handling client ID: %d\n", client_data->client_id);
+
+    while (1) {
+        printf("Attempting to read message from %s\n", client_data->fifo_path);
+        receive_message(client_data->fifo_path, buffer, sizeof(buffer));
+
+        if (strlen(buffer) == 0) {
+            printf("No command received. Closing client connection.\n");
+            break;
+        }
+
         char command[32];
         int x, y, length;
         char orientation;
+
         sscanf(buffer, "%s", command);
+        printf("Received command: %s\n", command);
 
         if (strcmp(command, "PLACE") == 0) {
             sscanf(buffer, "%s %d %d %d %c", command, &x, &y, &length, &orientation);
             int result = place_ship(&board, x, y, length, orientation);
             snprintf(response, sizeof(response), "PLACE_RESPONSE %d", result);
-            send_message(client_write_path, response);
         } else if (strcmp(command, "ATTACK") == 0) {
             sscanf(buffer, "%s %d %d", command, &x, &y);
             int result = attack(&board, x, y);
             snprintf(response, sizeof(response), "ATTACK_RESPONSE %d", result);
-            send_message(client_write_path, response);
-
             if (is_game_over(&board)) {
-                send_message(client_write_path, "GAME_OVER");
+                snprintf(response, sizeof(response), "GAME_OVER");
                 break;
             }
         } else if (strcmp(command, "QUIT") == 0) {
+            snprintf(response, sizeof(response), "DISCONNECTED");
             break;
+        } else {
+            snprintf(response, sizeof(response), "UNKNOWN_COMMAND");
         }
+
+        printf("Attempting to send message to %s: %s\n", client_data->fifo_path, response);
+        send_message(client_data->fifo_path, response);
     }
 
-    // Čistenie
-    pipe_close(read_fd);
-    pipe_close(write_fd);
-    pipe_destroy(client_read_path);
-    pipe_destroy(client_write_path);
+    free(client_data); // Free the client data
+    printf("Client connection closed.\n");
 }
 
 
@@ -90,60 +93,78 @@ void broadcast_message(const char *message, int exclude_client) {
 }
 
 void initialize_server(void) {
-    if (sem_init(&fifo_semaphore, 0, 1) != 0) {
+    fifo_semaphore = dispatch_semaphore_create(1);
+    if (fifo_semaphore == NULL) {
         perror("Failed to initialize semaphore");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
-    // Inicializácia FIFO servera
-    pipe_init(SERVER_FIFO_PATH);
+    // Odstránenie starého FIFO, ak existuje
+    unlink(SERVER_FIFO_PATH);
+
+    // Vytvorenie FIFO
+    if (mkfifo(SERVER_FIFO_PATH, 0666) == -1) {
+        perror("Failed to create server FIFO");
+        exit(EXIT_FAILURE);
+    }
+
     printf("Server FIFO created at path: %s\n", SERVER_FIFO_PATH);
 }
 
-
-
 void accept_connection(void) {
-    char client_fifo[256];
     char buffer[1024];
     int client_id = 0;
 
     while (1) {
-        sem_wait(&fifo_semaphore);
+        printf("Waiting for client connection...\n");
+        dispatch_semaphore_wait(fifo_semaphore, DISPATCH_TIME_FOREVER);
         int fd = pipe_open_read(SERVER_FIFO_PATH);
-        sem_post(&fifo_semaphore);
+        dispatch_semaphore_signal(fifo_semaphore);
 
         if (fd == -1) {
             perror("Failed to open server FIFO for reading");
             continue;
         }
 
-        // Čítanie mena klientského FIFO
         if (read(fd, buffer, sizeof(buffer)) > 0) {
-            snprintf(client_fifo, sizeof(client_fifo), CLIENT_FIFO_TEMPLATE, client_id++);
             printf("Client connected: %s\n", buffer);
 
-            // Vytvorenie vlákna pre klienta
-            pthread_t client_thread;
-            char *fifo_name = strdup(client_fifo); // Prenos mena FIFO do vlákna
+            char client_fifo[256];
+            snprintf(client_fifo, sizeof(client_fifo), "/tmp/client_%d", client_id);
 
-            if (pthread_create(&client_thread, NULL, (void *)handle_client, (void *)(intptr_t)client_id) != 0) {
-                perror("Failed to create thread");
+            pipe_init(client_fifo);
+
+            ClientData *client_data = malloc(sizeof(ClientData));
+            if (!client_data) {
+                perror("Failed to allocate memory for client data");
+                continue;
             }
 
+            strncpy(client_data->fifo_path, client_fifo, sizeof(client_data->fifo_path));
+            client_data->client_id = client_id;
+
+            pthread_t client_thread;
+            if (pthread_create(&client_thread, NULL, (void *)handle_client, (void *)client_data) != 0) {
+                perror("Failed to create thread");
+                free(client_data);
+            }
             pthread_detach(client_thread);
+            client_id++;
         }
 
         pipe_close(fd);
     }
+    unlink(SERVER_FIFO_PATH);
 }
 
+
 void receive_message(const char *path, char *buffer, size_t buffer_size) {
-    pipe_init(path);
+    printf("Attempting to read message from %s\n", path);
 
     int fd = pipe_open_read(path);
     if (fd == -1) {
         perror("Failed to open FIFO for reading");
-        exit(EXIT_FAILURE);
+        return; // Avoid crashing the server
     }
 
     memset(buffer, 0, buffer_size);
@@ -156,24 +177,20 @@ void receive_message(const char *path, char *buffer, size_t buffer_size) {
     pipe_close(fd);
 }
 
-
 void send_message(const char *path, const char *message) {
-    // Inicializácia FIFO, ak ešte neexistuje
-    pipe_init(path);
+    printf("Attempting to send message to %s: %s\n", path, message);
 
-    // Otvorenie FIFO na zápis
     int fd = pipe_open_write(path);
     if (fd == -1) {
         perror("Failed to open FIFO for writing");
-        exit(EXIT_FAILURE);
+        return; // Avoid crashing the server
     }
 
-    // Zápis správy do FIFO
     if (write(fd, message, strlen(message) + 1) == -1) {
         perror("Failed to write to FIFO");
+    } else {
+        printf("Message sent to %s: %s\n", path, message);
     }
 
-    // Uzavretie FIFO
     pipe_close(fd);
-    printf("Message sent to %s: %s\n", path, message);
 }
