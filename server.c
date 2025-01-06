@@ -1,6 +1,7 @@
 #include "server.h"
 #include "pipe.h"
 #include "game-logic.h"
+#include "client.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
