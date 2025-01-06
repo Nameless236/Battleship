@@ -9,17 +9,20 @@
 #define SERVER_FIFO_PATH "/tmp/server_fifo"
 
 void run_client() {
-    const char *server_fifo = "/tmp/server_fifo";
-    char client_read_fifo[256], client_write_fifo[256];
-    snprintf(client_read_fifo, sizeof(client_read_fifo), "/tmp/client_%d_read", getpid());
-    snprintf(client_write_fifo, sizeof(client_write_fifo), "/tmp/client_%d_write", getpid());
+    const char *server_fifo = SERVER_FIFO_PATH;
+    char client_fifo[256];
+    snprintf(client_fifo, sizeof(client_fifo), "/tmp/client_fifo_%d", getpid());
 
-    unlink(client_read_fifo); // Remove old FIFOs if they exist
-    unlink(client_write_fifo);
+    // Remove old FIFO if it exists
+    unlink(client_fifo);
 
-    pipe_init(client_read_fifo); // Create new FIFOs
-    pipe_init(client_write_fifo);
+    // Create a new FIFO
+    if (mkfifo(client_fifo, 0666) == -1) {
+        perror("Failed to create client FIFO");
+        exit(EXIT_FAILURE);
+    }
 
+    // Send a connection message to the server
     char connect_msg[256];
     snprintf(connect_msg, sizeof(connect_msg), "CONNECT %d", getpid());
     send_message(server_fifo, connect_msg);
@@ -31,7 +34,7 @@ void run_client() {
         buffer[strcspn(buffer, "\n")] = '\0';
 
         send_message(server_fifo, buffer);
-        receive_message(client_read_fifo, buffer, sizeof(buffer));
+        receive_message(client_fifo, buffer, sizeof(buffer));
         printf("Server response: %s\n", buffer);
 
         if (strcmp(buffer, "GAME_OVER") == 0 || strcmp(buffer, "DISCONNECTED") == 0) {
@@ -39,9 +42,10 @@ void run_client() {
         }
     }
 
-    pipe_destroy(client_read_fifo);
-    pipe_destroy(client_write_fifo);
+    // Clean up and remove the client FIFO
+    unlink(client_fifo);
 }
+
 
 void send_message(const char *path, const char *message) {
     // Otvorenie FIFO na zápis
