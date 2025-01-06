@@ -14,6 +14,7 @@ typedef struct {
     int id;             // ID hráča
     GameBoard board;    // Jeho herná mriežka
     int ships_remaining; // Počet zostávajúcich lodí
+    char* name;         // Meno hráča
 } Player;
 
 // Štruktúra hry
