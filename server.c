@@ -73,9 +73,9 @@ void accept_connection(void) {
     while (1) {
         printf("Waiting for client connection...\n");
 
-        sem_wait(&fifo_semaphore); // Wait on the semaphore
+        sem_wait(&fifo_semaphore); // Wait on semaphore
         int fd = pipe_open_read(SERVER_FIFO_PATH);
-        sem_post(&fifo_semaphore); // Signal the semaphore
+        sem_post(&fifo_semaphore); // Signal semaphore
 
         if (fd == -1) {
             perror("Failed to open server FIFO for reading");
@@ -85,13 +85,16 @@ void accept_connection(void) {
         if (read(fd, buffer, sizeof(buffer)) > 0) {
             printf("Client connected: %s\n", buffer);
 
+            int client_id;
+            sscanf(buffer, "CONNECT %d", &client_id);
+
             ClientData *client_data = malloc(sizeof(ClientData));
             if (!client_data) {
                 perror("Failed to allocate memory for client data");
                 continue;
             }
 
-            snprintf(client_data->fifo_path, sizeof(client_data->fifo_path), CLIENT_FIFO_TEMPLATE, player_count);
+            snprintf(client_data->fifo_path, sizeof(client_data->fifo_path), "/tmp/client_fifo_%d", client_id);
             client_data->client_id = player_count;
 
             connected_players[player_count] = client_data; // Store player data
@@ -104,18 +107,18 @@ void accept_connection(void) {
                 continue;
             }
             pthread_detach(client_thread);
-            puts("Client thread created.");
 
             // Check if two players are connected
             if (player_count == MAX_CLIENTS) {
                 initialize_game();
-                break; // Exit the loop once the game starts
+                break; // Exit loop once game starts
             }
         }
 
         pipe_close(fd);
     }
 }
+
 
 void initialize_server(void) {
     if (sem_init(&fifo_semaphore, 0, 1) == -1) { // Binary semaphore with initial value 1
