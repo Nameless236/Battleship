@@ -5,20 +5,21 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <dispatch/dispatch.h>
+#include <semaphore.h>
 
 #define SERVER_FIFO_PATH "/tmp/server_fifo"
 #define CLIENT_FIFO_TEMPLATE "client_fifo_%d"
 #define MAX_CLIENTS 2
 
-dispatch_semaphore_t fifo_semaphore = NULL;
+// Replace dispatch_semaphore_t with sem_t
+sem_t fifo_semaphore;
 
 void run_server() {
     initialize_server();
 
     while (1) {
         printf("Waiting for client connection...\n");
-        accept_connection(); // Spracovanie pripojení klientov
+        accept_connection(); // Process client connections
     }
 }
 
@@ -75,14 +76,13 @@ void handle_client(void *arg) {
     printf("Client connection closed.\n");
 }
 
-
 void broadcast_message(const char *message, int exclude_client) {
     char pipe_path[256];
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (i != exclude_client) {
             snprintf(pipe_path, sizeof(pipe_path), "/tmp/client_%d_write", i);
 
-            // Otvorenie FIFO na zápis
+            // Open FIFO for writing
             int fd = pipe_open_write(pipe_path);
             if (fd != -1) {
                 send_message(pipe_path, message);
@@ -93,16 +93,16 @@ void broadcast_message(const char *message, int exclude_client) {
 }
 
 void initialize_server(void) {
-    fifo_semaphore = dispatch_semaphore_create(1);
-    if (fifo_semaphore == NULL) {
+    // Initialize the semaphore
+    if (sem_init(&fifo_semaphore, 0, 1) == -1) { // Binary semaphore with initial value 1
         perror("Failed to initialize semaphore");
         exit(EXIT_FAILURE);
     }
 
-    // Odstránenie starého FIFO, ak existuje
+    // Remove old FIFO if it exists
     unlink(SERVER_FIFO_PATH);
 
-    // Vytvorenie FIFO
+    // Create server FIFO
     if (mkfifo(SERVER_FIFO_PATH, 0666) == -1) {
         perror("Failed to create server FIFO");
         exit(EXIT_FAILURE);
@@ -117,9 +117,14 @@ void accept_connection(void) {
 
     while (1) {
         printf("Waiting for client connection...\n");
-        dispatch_semaphore_wait(fifo_semaphore, DISPATCH_TIME_FOREVER);
+
+        // Wait on the semaphore
+        sem_wait(&fifo_semaphore);
+
         int fd = pipe_open_read(SERVER_FIFO_PATH);
-        dispatch_semaphore_signal(fifo_semaphore);
+
+        // Signal the semaphore after accessing the shared resource
+        sem_post(&fifo_semaphore);
 
         if (fd == -1) {
             perror("Failed to open server FIFO for reading");
@@ -154,9 +159,9 @@ void accept_connection(void) {
 
         pipe_close(fd);
     }
-    unlink(SERVER_FIFO_PATH);
-}
 
+    unlink(SERVER_FIFO_PATH); // Cleanup the FIFO when done
+}
 
 void receive_message(const char *path, char *buffer, size_t buffer_size) {
     printf("Attempting to read message from %s\n", path);
