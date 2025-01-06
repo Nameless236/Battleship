@@ -24,7 +24,7 @@ void run_server() {
 }
 
 void handle_client(void *arg) {
-    ClientData *client_data = (ClientData *)arg;
+    ClientData *client_data = arg;
     char buffer[1024];
     char response[1024];
     GameBoard board;

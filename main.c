@@ -9,8 +9,8 @@ void run_client();
 
 #ifdef SERVER
 #include "server.h"
-#include <dispatch/dispatch.h>
-extern dispatch_semaphore_t fifo_semaphore; // Deklarácia semaforu
+#include <semaphore.h> // Use POSIX semaphore
+extern sem_t fifo_semaphore; // Declare the semaphore
 void run_server();
 #endif
 
@@ -22,9 +22,9 @@ int main() {
 #ifdef SERVER
     run_server();
 
-    // Uvoľnenie semaforu po ukončení servera
-    if (fifo_semaphore != NULL) {
-        dispatch_release(fifo_semaphore);
+    // Destroy the semaphore after the server shuts down
+    if (sem_destroy(&fifo_semaphore) != 0) {
+        perror("Failed to destroy semaphore");
     }
 #endif
 
