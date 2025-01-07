@@ -13,7 +13,29 @@
 #define SERVER_READ_FIFO "/tmp/server_read_fifo"
 #define SERVER_WRITE_FIFO "/tmp/server_write_fifo"
 #define SEMAPHORE_FILE "/home/pastorek10/sem_connect" // Path to shared memory file
+#define SEMAPHORE_FILE_READ "/home/pastorek10/sem_read" // Path to shared memory file
+#define SEMAPHORE_FILE_WRITE "/home/pastorek10/sem_write" // Path to shared memory file
 #define BUFFER_SIZE 1024
+
+sem_t *open_semaphore(const char *file) {
+    // Open the shared memory file
+    int shm_fd = open(file, O_RDWR, 0666); // Open existing shared memory file
+    if (shm_fd == -1) {
+        perror("Failed to open shared memory file");
+        return NULL;
+    }
+
+    // Map the shared memory file into memory
+    sem_t *semaphore = mmap(NULL, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (semaphore == MAP_FAILED) {
+        perror("Failed to map shared memory");
+        close(shm_fd);
+        return NULL;
+    }
+
+    close(shm_fd); // File descriptor no longer needed after mmap
+    return semaphore;
+}
 
 void run_client() {
     char buffer[BUFFER_SIZE];
@@ -44,30 +66,37 @@ void run_client() {
     }
     printf("Client: Sent connection request.\n");
 
-    // Open the shared memory file
-    int shm_fd = open(SEMAPHORE_FILE, O_RDWR, 0666); // Open existing shared memory file
-    if (shm_fd == -1) {
-        perror("Client: Failed to open shared memory file");
+    // Open existing named semaphores
+    sem_t *sem_connect = sem_open("/sem_connect", 0); // Open without creating
+    if (sem_connect == SEM_FAILED) {
+        perror("Client: Failed to open /sem_connect semaphore");
         close(write_fd);
         close(read_fd);
         exit(EXIT_FAILURE);
     }
 
-    // Map the shared memory file into memory
-    sem_t *sem_connect = mmap(NULL, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    if (sem_connect == MAP_FAILED) {
-        perror("Client: Failed to map shared memory");
-        close(shm_fd);
+    sem_t *sem_read = sem_open("/sem_read", 0); // Open without creating
+    if (sem_read == SEM_FAILED) {
+        perror("Client: Failed to open /sem_read semaphore");
         close(write_fd);
         close(read_fd);
         exit(EXIT_FAILURE);
     }
-    close(shm_fd); // The file descriptor is no longer needed after mmap
+
+    sem_t *sem_write = sem_open("/sem_write", 0); // Open without creating
+    if (sem_write == SEM_FAILED) {
+        perror("Client: Failed to open /sem_write semaphore");
+        close(write_fd);
+        close(read_fd);
+        exit(EXIT_FAILURE);
+    }
+    
+    printf("%p\n", &sem_connect);
 
     // Signal the server's semaphore
     if (sem_post(sem_connect) == -1) {
         perror("Client: Failed to signal semaphore");
-        munmap(sem_connect, sizeof(sem_t));
+        munmap(&sem_connect, sizeof(sem_t));
         close(write_fd);
         close(read_fd);
         exit(EXIT_FAILURE);
@@ -78,7 +107,7 @@ void run_client() {
     ssize_t bytes_received = receive_message(read_fd, buffer, BUFFER_SIZE);
     if (bytes_received < 0) {
         perror("Client: Failed to receive acknowledgment from server");
-        munmap(sem_connect, sizeof(sem_t));
+        munmap(&sem_connect, sizeof(sem_t));
         close(write_fd);
         close(read_fd);
         exit(EXIT_FAILURE);
@@ -86,7 +115,7 @@ void run_client() {
 
     if (strcmp(buffer, "REJECT") == 0) {
         printf("Client: Connection rejected by server (server full).\n");
-        munmap(sem_connect, sizeof(sem_t));
+        munmap(&sem_connect, sizeof(sem_t));
         close(write_fd);
         close(read_fd);
         exit(EXIT_SUCCESS); // Gracefully terminate
@@ -94,7 +123,7 @@ void run_client() {
         printf("Client: Connection accepted by server.\n");
     } else {
         printf("Client: Unknown response from server: %s\n", buffer);
-        munmap(sem_connect, sizeof(sem_t));
+        munmap(&sem_connect, sizeof(sem_t));
         close(write_fd);
         close(read_fd);
         exit(EXIT_FAILURE);
@@ -118,15 +147,17 @@ void run_client() {
             break;
         }
 
+        sem_post(sem_read);
+
         // Exit loop if the client sends QUIT command
         if (strcmp(command, "QUIT") == 0) {
             printf("Client: Disconnecting from server.\n");
             break;
         }
 
-        // Receive response from the server
+        // Wait for response from the server
         bytes_received = receive_message(read_fd, buffer, BUFFER_SIZE);
-        if (bytes_received <= 0) {
+        if (bytes_received < 0) {
             perror("Client: Failed to receive response from server");
             break;
         }
@@ -142,10 +173,12 @@ void run_client() {
         }
     }
 
-    // Clean up resources before exiting
     munmap(sem_connect, sizeof(sem_t));
-    close(write_fd);
-    close(read_fd);
+     munmap(sem_read, sizeof(sem_t));
+     munmap(sem_write, sizeof(sem_t));
+     close(write_fd);
+     close(read_fd);
+
 
     printf("Client: Shutting down.\n");
 }
