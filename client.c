@@ -134,33 +134,9 @@ void run_client() {
         exit(EXIT_FAILURE);
     }
 
-    // Po prijatí názvu zdieľanej pamäte
-    char shared_board_name[BUFFER_SIZE];
-    receive_message(read_fd, shared_board_name, BUFFER_SIZE);
-
-    // Pripojenie k zdieľanej pamäti
-    int shm_fd = shm_open(shared_board_name, O_RDWR, 0666);
-    if (shm_fd == -1) {
-        perror("Client: Failed to open shared memory");
-        exit(EXIT_FAILURE);
-    }
-
-    GameBoard *shared_board = mmap(NULL, sizeof(GameBoard), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    if (shared_board == MAP_FAILED) {
-        perror("Client: Failed to map shared memory");
-        close(shm_fd);
-        exit(EXIT_FAILURE);
-    }
-
-    close(shm_fd); // Už nie je potrebný
-
-
     int ships_to_place = 5;
 
     while (ships_to_place > 0) {
-        printf("Current board:\n");
-        print_board(shared_board);
-
         printf("Place your ships. Remaining: %d\n", ships_to_place);
         printf("Enter command (PLACE x y length orientation): ");
 
@@ -196,8 +172,11 @@ void run_client() {
         if (strcmp(buffer, "PLACE_RESPONSE 1") == 0) {
             ships_to_place--; // Successfully placed a ship
             // Receive updated board from server
-
-            // TU POTREBUJEME ZMENIT BOARD
+            bytes_received = receive_message(read_fd, board.grid, sizeof(board.grid));
+            if (bytes_received < 0) {
+                perror("Client: Failed to receive updated board from server");
+                break;
+            }
             printf("Board updated from server:\n");
             print_board(&board);
         } else {
@@ -267,7 +246,7 @@ void run_client() {
 
 int connect_to_server(const char *server_fifo, const char *client_fifo) {
     char connect_msg[BUFFER_SIZE];
-    
+
     // Send client's unique FIFO path as connection message
     snprintf(connect_msg, sizeof(connect_msg), "%s", client_fifo);
 

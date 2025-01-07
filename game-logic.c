@@ -71,7 +71,6 @@ int place_ship(GameBoard *board, int x, int y, int length, char orientation) {
     return 1; // Ship placed successfully
 }
 
-
 int attack(GameBoard *board, int x, int y) {
     if (x < 0 || x >= 10 || y < 0 || y >= 10) {
         return -1; // Neplatná pozícia
