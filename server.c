@@ -12,6 +12,8 @@
 #include <sys/stat.h> // For mode constants
 #include <sys/types.h>
 
+#include "game-logic.h"
+
 #define SERVER_READ_FIFO "/tmp/server_read_fifo"
 #define SERVER_WRITE_FIFO "/tmp/server_write_fifo"
 #define SEMAPHORE_FILE "/home/pastorek10/sem_connect" // Path to shared memory file
@@ -20,11 +22,27 @@
 #define BUFFER_SIZE 1024
 #define MAX_CLIENTS 2 // Limit to two clients
 
+GameData game; // Pole na uloženie hier
+pthread_mutex_t game_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 pthread_mutex_t fifo_mutex; // Mutex for thread-safe access to FIFOs
 sem_t *sem_connect;
 sem_t * sem_read;
 sem_t* sem_write;        // Pointer to unnamed semaphore in shared memory         
 int connected_clients = 0;  // Track the number of connected clients
+
+void initialize_game(GameData *game_data) {
+    pthread_mutex_lock(&game_mutex);
+
+    initialize_board(&game_data->board_players[0]); // Herná mriežka pre hráča 1
+    initialize_board(&game_data->board_players[1]); // Herná mriežka pre hráča 2
+    game_data->player_turn = 0; // Hráč 1 začína
+    game_data->client_id_1 = -1; // Nepripojený klient 1
+    game_data->client_id_2 = -1; // Nepripojený klient 2
+
+    pthread_mutex_unlock(&game_mutex);
+}
+
 
 sem_t *initialize_semaphore_file(const char *file) {
     // Create or open the shared memory file
@@ -117,7 +135,7 @@ void cleanup_server() {
     sem_unlink("/sem_write");
 
     pthread_mutex_destroy(&fifo_mutex);
-    
+
     printf("Server shut down gracefully.\n");
 }
 
@@ -125,12 +143,13 @@ void cleanup_server() {
 void run_server() {
     initialize_server();
 
-     // Declare an array to hold client information
-    ClientInfo client_info[MAX_CLIENTS];
+    GameData game_data; // Zdieľané dáta hry
+    initialize_game(&game_data);
 
-    // Declare an array for client threads
-    pthread_t client_threads[MAX_CLIENTS];
+    ClientInfo client_info[MAX_CLIENTS]; // Pole pre informácie o klientoch
+    pthread_t client_threads[MAX_CLIENTS]; // Pole pre vlákna klientov
 
+    int connected_clients = 0;
 
     while (1) {
         char buffer[BUFFER_SIZE];
@@ -171,15 +190,26 @@ void run_server() {
             send_message(write_fd, reject_message);
             printf("Server: Rejected client connection (server full).\n");
         } else {
+            // Inicializácia ClientInfo
+            client_info[connected_clients].client_id = connected_clients + 1;
+            client_info[connected_clients].game_data = &game_data;
+
+            // Priradenie klienta k hráčovi v GameData
+            if (connected_clients == 0) {
+                game_data.client_id_1 = client_info[connected_clients].client_id;
+            } else if (connected_clients == 1) {
+                game_data.client_id_2 = client_info[connected_clients].client_id;
+            }
+
             const char *accept_message = "ACCEPT";
             send_message(write_fd, accept_message);
 
-            // Assign client ID and spawn a thread for handling this client
-            client_info[connected_clients].client_id = connected_clients;
+            printf("Server: Accepted connection from Client %d.\n", client_info[connected_clients].client_id);
+
+            // Vytvorenie vlákna pre klienta
             pthread_create(&client_threads[connected_clients], NULL, handle_client, &client_info[connected_clients]);
 
             connected_clients++;
-            printf("Server: Accepted client connection.\n");
         }
 
         close(read_fd);
@@ -191,17 +221,16 @@ void run_server() {
 
 
 void *handle_client(void *arg) {
-    ClientInfo *client_info = (ClientInfo *)arg; // Cast argument to ClientInfo pointer
+    ClientInfo *client_info = (ClientInfo *)arg; // Cast na ClientInfo
+    GameData *game_data = client_info->game_data; // Zdieľané dáta hry
     char buffer[BUFFER_SIZE];
 
     printf("Handling client %d...\n", client_info->client_id);
 
     while (1) {
         pthread_mutex_lock(&fifo_mutex);
-        printf("MUTEX\n");
         // Wait for a client message
         sem_wait(sem_read);
-        printf("signal\n");
 
         int read_fd = pipe_open_read(SERVER_READ_FIFO);
         if (read_fd == -1) {
@@ -225,7 +254,37 @@ void *handle_client(void *arg) {
         // Process commands like PLACE, ATTACK, or QUIT
         if (strncmp(buffer, "PLACE", 5) == 0) {
             printf("Processing PLACE command from client %d...\n", client_info->client_id);
-            // Add logic for placing ships on the game board
+
+            int player_index = client_info->client_id == game_data->client_id_1 ? 0 : 1;
+
+            int x, y, length;
+            char orientation;
+
+            sscanf(buffer, "PLACE %d %d %d %c", &x, &y, &length, &orientation);
+            printf("x %d y %d length %d orientation %c\n", x, y, length, orientation);
+
+            int result = place_ship(&game_data->board_players[player_index], x, y, length, orientation);
+            printf("Result: %d\n", result);
+            const char *response = result == 1 ? "PLACE_RESPONSE 1" : "PLACE_RESPONSE 0";
+
+            printf("Ship placement %s for Client %d.\n", result == 1 ? "successful" : "failed", client_info->client_id);
+
+            pthread_mutex_lock(&fifo_mutex);
+            int write_fd = pipe_open_write(SERVER_WRITE_FIFO);
+            if (write_fd == -1) {
+                perror("Failed to open server write FIFO");
+                pthread_mutex_unlock(&fifo_mutex);
+                break;
+            }
+            send_message(write_fd, response);
+
+            if (result == 1) {
+                print_board(game_data->board_players[player_index]);
+            }
+
+            pipe_close(write_fd);
+            pthread_mutex_unlock(&fifo_mutex);
+
         } else if (strncmp(buffer, "ATTACK", 6) == 0) {
             printf("Processing ATTACK command from client %d...\n", client_info->client_id);
             // Add logic for attacking positions on the game board
