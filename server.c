@@ -28,7 +28,7 @@ pthread_mutex_t game_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t fifo_mutex; // Mutex for thread-safe access to FIFOs
 sem_t *sem_connect;
 sem_t * sem_read;
-sem_t* sem_write;        // Pointer to unnamed semaphore in shared memory         
+sem_t* sem_write;        // Pointer to unnamed semaphore in shared memory
 int connected_clients = 0;  // Track the number of connected clients
 
 void initialize_game(GameData *game_data) {
@@ -264,7 +264,6 @@ void *handle_client(void *arg) {
             printf("x %d y %d length %d orientation %c\n", x, y, length, orientation);
 
             int result = place_ship(&game_data->board_players[player_index], x, y, length, orientation);
-            printf("Result: %d\n", result);
             const char *response = result == 1 ? "PLACE_RESPONSE 1" : "PLACE_RESPONSE 0";
 
             printf("Ship placement %s for Client %d.\n", result == 1 ? "successful" : "failed", client_info->client_id);
@@ -277,14 +276,10 @@ void *handle_client(void *arg) {
                 break;
             }
             send_message(write_fd, response);
-
-            if (result == 1) {
-                print_board(game_data->board_players[player_index]);
-            }
-
             pipe_close(write_fd);
             pthread_mutex_unlock(&fifo_mutex);
 
+            // Add logic for placing ships on the game board
         } else if (strncmp(buffer, "ATTACK", 6) == 0) {
             printf("Processing ATTACK command from client %d...\n", client_info->client_id);
             // Add logic for attacking positions on the game board
@@ -322,4 +317,3 @@ void *handle_client(void *arg) {
 
     return NULL;
 }
-
