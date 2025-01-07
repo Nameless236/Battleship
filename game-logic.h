@@ -35,3 +35,5 @@ int attack(GameBoard *board, int x, int y);
 // Overí, či sú všetky lode zničené
 int is_game_over(GameBoard *board);
 
+void print_board(GameBoard *board);
+
