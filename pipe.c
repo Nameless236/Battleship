@@ -1,11 +1,10 @@
 #include "pipe.h"
-
 #include <stdio.h>
 #include <fcntl.h>
 #include <stdlib.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <unistd.h>
+#include <errno.h>
+#include <sys/stat.h>
 
 
 void pipe_init(const char *path) {
@@ -16,10 +15,12 @@ void pipe_init(const char *path) {
     }
   }
 
-  if (mkfifo(path, S_IRUSR | S_IWUSR | S_IWGRP | S_IRGRP) == -1) { // Vytvorenie FIFO
-    perror("Failed to create named pipe");
-    exit(EXIT_FAILURE);
-  }
+
+ if (mkfifo(path, 0666) == -1) {
+        perror("Failed to create named pipe");
+        exit(EXIT_FAILURE);
+    }
+
 }
 
 
@@ -40,13 +41,32 @@ static int open_pipe(const char *path, int flags) {
   return fd;
 }
 
-int pipe_open_write(const char *path) {
-  return open_pipe(path, O_WRONLY);
+int pipe_open_read(const char *path) {
+    int fd;
+
+    // Open the FIFO in read-write mode to avoid blocking
+    fd = open(path, O_RDWR);
+    if (fd == -1) {
+        perror("Failed to open FIFO for reading");
+        return -1;
+    }
+
+    return fd;
 }
 
-int pipe_open_read(const char *path) {
-  return open_pipe(path, O_RDONLY);
+int pipe_open_write(const char *path) {
+    int fd;
+
+    // Open the FIFO in read-write mode to avoid blocking
+    fd = open(path, O_RDWR);
+    if (fd == -1) {
+        perror("Failed to open FIFO for writing");
+        return -1;
+    }
+
+    return fd;
 }
+
 
 void pipe_close(const int fd) {
   if (close(fd) == -1) {

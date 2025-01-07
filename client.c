@@ -1,131 +1,260 @@
 #include "client.h"
+#include "communication.h"
 #include "pipe.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/stat.h>
-#include <stdlib.h>
+#include <semaphore.h>
+#include <fcntl.h>
+#include <sys/mman.h> // For mmap
+#include <sys/stat.h> // For mode constants
 
-#define SERVER_FIFO_PATH "/tmp/server_fifo"
+#define SERVER_READ_FIFO "/tmp/server_read_fifo"
+#define SERVER_WRITE_FIFO "/tmp/server_write_fifo"
+#define SEMAPHORE_FILE "/home/pastorek10/sem_connect" // Path to shared memory file
+#define SEMAPHORE_FILE_READ "/home/pastorek10/sem_read" // Path to shared memory file
+#define SEMAPHORE_FILE_WRITE "/home/pastorek10/sem_write" // Path to shared memory file
+#define BUFFER_SIZE 1024
+
+sem_t *open_semaphore(const char *file) {
+    // Open the shared memory file
+    int shm_fd = open(file, O_RDWR, 0666); // Open existing shared memory file
+    if (shm_fd == -1) {
+        perror("Failed to open shared memory file");
+        return NULL;
+    }
+
+    // Map the shared memory file into memory
+    sem_t *semaphore = mmap(NULL, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (semaphore == MAP_FAILED) {
+        perror("Failed to map shared memory");
+        close(shm_fd);
+        return NULL;
+    }
+
+    close(shm_fd); // File descriptor no longer needed after mmap
+    return semaphore;
+}
 
 void run_client() {
-    const char *server_fifo = "/tmp/server_fifo";
-    char client_read_fifo[256], client_write_fifo[256];
-    snprintf(client_read_fifo, sizeof(client_read_fifo), "/tmp/client_%d_read", getpid());
-    snprintf(client_write_fifo, sizeof(client_write_fifo), "/tmp/client_%d_write", getpid());
+    char buffer[BUFFER_SIZE];
 
-    unlink(client_read_fifo); // Remove old FIFOs if they exist
-    unlink(client_write_fifo);
+    printf("Client: Connecting to server...\n");
 
-    pipe_init(client_read_fifo); // Create new FIFOs
-    pipe_init(client_write_fifo);
+    // Open FIFOs for communication
+    int write_fd = pipe_open_write(SERVER_READ_FIFO);
+    if (write_fd == -1) {
+        perror("Client: Failed to open write FIFO");
+        exit(EXIT_FAILURE);
+    }
 
-    char connect_msg[256];
-    snprintf(connect_msg, sizeof(connect_msg), "CONNECT %d", getpid());
-    send_message(server_fifo, connect_msg);
+    int read_fd = pipe_open_read(SERVER_WRITE_FIFO);
+    if (read_fd == -1) {
+        perror("Client: Failed to open read FIFO");
+        close(write_fd);
+        exit(EXIT_FAILURE);
+    }
 
-    char buffer[1024];
+    // Send connection request to the server
+    const char *connect_message = "CONNECT";
+    if (send_message(write_fd, connect_message) != 0) {
+        perror("Client: Failed to send connection message");
+        close(write_fd);
+        close(read_fd);
+        exit(EXIT_FAILURE);
+    }
+    printf("Client: Sent connection request.\n");
+
+    // Open existing named semaphores
+    sem_t *sem_connect = sem_open("/sem_connect", 0); // Open without creating
+    if (sem_connect == SEM_FAILED) {
+        perror("Client: Failed to open /sem_connect semaphore");
+        close(write_fd);
+        close(read_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    sem_t *sem_read = sem_open("/sem_read", 0); // Open without creating
+    if (sem_read == SEM_FAILED) {
+        perror("Client: Failed to open /sem_read semaphore");
+        close(write_fd);
+        close(read_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    sem_t *sem_write = sem_open("/sem_write", 0); // Open without creating
+    if (sem_write == SEM_FAILED) {
+        perror("Client: Failed to open /sem_write semaphore");
+        close(write_fd);
+        close(read_fd);
+        exit(EXIT_FAILURE);
+    }
+    
+    printf("%p\n", &sem_connect);
+
+    // Signal the server's semaphore
+    if (sem_post(sem_connect) == -1) {
+        perror("Client: Failed to signal semaphore");
+        munmap(&sem_connect, sizeof(sem_t));
+        close(write_fd);
+        close(read_fd);
+        exit(EXIT_FAILURE);
+    }
+    printf("Client: Signaled semaphore.\n");
+
+    // Wait for acknowledgment from the server
+    ssize_t bytes_received = receive_message(read_fd, buffer, BUFFER_SIZE);
+    if (bytes_received < 0) {
+        perror("Client: Failed to receive acknowledgment from server");
+        munmap(&sem_connect, sizeof(sem_t));
+        close(write_fd);
+        close(read_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    if (strcmp(buffer, "REJECT") == 0) {
+        printf("Client: Connection rejected by server (server full).\n");
+        munmap(&sem_connect, sizeof(sem_t));
+        close(write_fd);
+        close(read_fd);
+        exit(EXIT_SUCCESS); // Gracefully terminate
+    } else if (strcmp(buffer, "ACCEPT") == 0) {
+        printf("Client: Connection accepted by server.\n");
+    } else {
+        printf("Client: Unknown response from server: %s\n", buffer);
+        munmap(&sem_connect, sizeof(sem_t));
+        close(write_fd);
+        close(read_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    // Command loop for communication with the server
     while (1) {
-        printf("Enter command (PLACE x y length orientation, ATTACK x y, QUIT): ");
-        fgets(buffer, sizeof(buffer), stdin);
-        buffer[strcspn(buffer, "\n")] = '\0';
+        char command[BUFFER_SIZE];
 
-        send_message(server_fifo, buffer);
-        receive_message(client_read_fifo, buffer, sizeof(buffer));
+        printf("Enter command (PLACE x y length orientation | ATTACK x y | QUIT): ");
+
+        // Get user input
+        fgets(command, sizeof(command), stdin);
+
+        // Remove newline character from input
+        command[strcspn(command, "\n")] = '\0';
+
+        // Send command to the server
+        if (send_message(write_fd, command) != 0) {
+            perror("Client: Failed to send command");
+            break;
+        }
+
+        sem_post(sem_read);
+
+        // Exit loop if the client sends QUIT command
+        if (strcmp(command, "QUIT") == 0) {
+            printf("Client: Disconnecting from server.\n");
+            break;
+        }
+
+        // Wait for response from the server
+        bytes_received = receive_message(read_fd, buffer, BUFFER_SIZE);
+        if (bytes_received < 0) {
+            perror("Client: Failed to receive response from server");
+            break;
+        }
+
+        buffer[bytes_received] = '\0'; // Null-terminate the string
+
         printf("Server response: %s\n", buffer);
 
+        // Exit if the server indicates game over or disconnection
         if (strcmp(buffer, "GAME_OVER") == 0 || strcmp(buffer, "DISCONNECTED") == 0) {
+            printf("Client: Server ended communication.\n");
             break;
         }
     }
 
-    pipe_destroy(client_read_fifo);
-    pipe_destroy(client_write_fifo);
+    munmap(sem_connect, sizeof(sem_t));
+     munmap(sem_read, sizeof(sem_t));
+     munmap(sem_write, sizeof(sem_t));
+     close(write_fd);
+     close(read_fd);
+
+
+    printf("Client: Shutting down.\n");
 }
 
-void send_message(const char *path, const char *message) {
-    // Otvorenie FIFO na zápis
-    int fd = pipe_open_write(path);
-    if (fd == -1) {
-        perror("Failed to open FIFO for writing");
-        exit(EXIT_FAILURE);
-    }
 
-    // Odoslanie správy
-    if (write(fd, message, strlen(message) + 1) == -1) {
-        perror("Failed to write to FIFO");
-    }
 
-    // Uzavretie FIFO
-    pipe_close(fd);
-    printf("Message sent to %s: %s\n", path, message);
-}
+int connect_to_server(const char *server_fifo, const char *client_fifo) {
+    char connect_msg[BUFFER_SIZE];
+    
+    // Send client's unique FIFO path as connection message
+    snprintf(connect_msg, sizeof(connect_msg), "%s", client_fifo);
 
-void receive_message(const char *path, char *buffer, size_t buffer_size) {
-    // Otvorenie FIFO na čítanie
-    int fd = pipe_open_read(path);
-    if (fd == -1) {
-        perror("Failed to open FIFO for reading");
-        exit(EXIT_FAILURE);
-    }
-
-    // Čítanie správy
-    memset(buffer, 0, buffer_size); // Vyčistenie bufferu
-    if (read(fd, buffer, buffer_size) > 0) {
-        printf("Message received from %s: %s\n", path, buffer);
-    } else {
-        perror("Failed to read from FIFO");
-    }
-
-    // Uzavretie FIFO
-    pipe_close(fd);
-}
-
-int connect_to_server(const char *server_fifo, int port) {
-    char client_pipe_path[256];
-    int client_id = getpid(); // Použitie PID na identifikáciu klienta
-
-    // Vytvorenie klientského FIFO
-    snprintf(client_pipe_path, sizeof(client_pipe_path), "/tmp/client_%d", client_id);
-    pipe_init(client_pipe_path);
-
-    // Poslanie požiadavky na pripojenie
-    char connect_msg[256];
-    snprintf(connect_msg, sizeof(connect_msg), "CONNECT %d", client_id);
-    send_message(server_fifo, connect_msg);
-
-    // Otvorenie klientského FIFO pre odpovede od servera
-    char buffer[1024];
-    receive_message(client_pipe_path, buffer, sizeof(buffer));
-
-    if (strncmp(buffer, "ACCEPT", 6) != 0) {
-        fprintf(stderr, "Server rejected the connection.\n");
-        pipe_destroy(client_pipe_path);
+    // Open server's write FIFO and send connection message
+    int server_fd = pipe_open_write(server_fifo);
+    if (server_fd == -1) {
+        perror("Failed to open server FIFO for writing");
         return -1;
     }
 
-    return 0; // Pripojenie úspešné
+    if (send_message(server_fd, connect_msg) != 0) {
+        pipe_close(server_fd);
+        return -1;
+    }
+    pipe_close(server_fd);
+
+    printf("Connection request sent to server.\n");
+
+    return 0;
 }
 
 void play_game(const char *server_fifo, const char *client_fifo) {
-    char buffer[1024];
-    char command[1024];
-    int running = 1;
+    char buffer[BUFFER_SIZE];
+    char command[BUFFER_SIZE];
 
-    while (running) {
-        printf("Enter command (PLACE x y length orientation, ATTACK x y, QUIT): ");
+    while (1) {
+        printf("Enter command (PLACE x y length orientation | ATTACK x y | QUIT): ");
+
+        // Get user input
         fgets(command, sizeof(command), stdin);
 
-        // Odstránenie nového riadku zo vstupu
+        // Remove newline character from input
         command[strcspn(command, "\n")] = '\0';
 
-        send_message(server_fifo, command);
-        receive_message(client_fifo, buffer, sizeof(buffer));
+        // Open the server's write FIFO and send command
+        int write_fd = pipe_open_write(server_fifo);
+        if (write_fd == -1) {
+            perror("Failed to open server FIFO for writing");
+            break;
+        }
+        if (send_message(write_fd, command) != 0) {
+            pipe_close(write_fd);
+            break;
+        }
+        pipe_close(write_fd);
+
+        // Exit loop if the client sends QUIT command
+        if (strcmp(command, "QUIT") == 0) {
+            break;
+        }
+
+        // Open the client's read FIFO and wait for response from server
+        int read_fd = pipe_open_read(client_fifo);
+        if (read_fd == -1) {
+            perror("Failed to open client FIFO for reading");
+            break;
+        }
+        if (receive_message(read_fd, buffer, sizeof(buffer)) != 0) {
+            pipe_close(read_fd);
+            break;
+        }
+        pipe_close(read_fd);
 
         printf("Server response: %s\n", buffer);
 
         if (strcmp(buffer, "GAME_OVER") == 0 || strcmp(buffer, "DISCONNECTED") == 0) {
-            running = 0;
+            break;
         }
     }
 }
