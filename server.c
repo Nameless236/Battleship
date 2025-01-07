@@ -1,147 +1,207 @@
 #include "server.h"
 #include "pipe.h"
-#include "game-logic.h"
-#include "client.h"
+#include "communication.h"
 #include <stdio.h>
-#include <string.h>
-#include <unistd.h>
 #include <stdlib.h>
-#include <semaphore.h>
+#include <string.h>
 #include <pthread.h>
+#include <unistd.h>
+#include <semaphore.h>
+#include <fcntl.h>
+#include <sys/mman.h> // For mmap
+#include <sys/stat.h> // For mode constants
+#include <sys/types.h>
 
-#define SERVER_FIFO_PATH "/tmp/server_fifo"
-#define CLIENT_FIFO_TEMPLATE "client_fifo_%d"
-#define MAX_CLIENTS 2
+#define SERVER_READ_FIFO "/tmp/server_read_fifo"
+#define SERVER_WRITE_FIFO "/tmp/server_write_fifo"
+#define SEMAPHORE_FILE "/home/pastorek10/sem_connect" // Path to shared memory file
+#define BUFFER_SIZE 1024
+#define MAX_CLIENTS 2 // Limit to two clients
 
-sem_t fifo_semaphore; // Semaphore for thread-safe access
-ClientData *connected_players[MAX_CLIENTS]; // Array to store connected players
-int player_count = 0; // Counter for connected players
-GameBoard game_board; // Game board
+pthread_mutex_t fifo_mutex; // Mutex for thread-safe access to FIFOs
+sem_t *sem_connect;         // Pointer to unnamed semaphore in shared memory
+sem_t sem_read, sem_write;         
+int connected_clients = 0;  // Track the number of connected clients
 
-void initialize_game() {
-    // Initialize the game board
-    initialize_board(&game_board);
-    printf("Game board initialized.\n");
+void initialize_server() {
+    printf("Initializing FIFOs...\n");
 
-    // Notify both players that the game is starting
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (connected_players[i] != NULL) {
-            char message[256];
-            snprintf(message, sizeof(message), "GAME_START Player %d", i + 1);
-            send_message(connected_players[i]->fifo_path, message);
-        }
+    // Create FIFOs with proper permissions
+    pipe_init(SERVER_READ_FIFO);
+    pipe_init(SERVER_WRITE_FIFO);
+
+    printf("Server initialized. Waiting for clients...\n");
+
+    // Create or open the shared memory file
+    int shm_fd = open(SEMAPHORE_FILE, O_CREAT | O_RDWR, 0666);
+    if (shm_fd == -1) {
+        perror("Failed to create shared memory file");
+        exit(EXIT_FAILURE);
     }
 
-    printf("Game is starting with players: %d and %d\n", connected_players[0]->client_id, connected_players[1]->client_id);
-}
-
-void handle_client(void *arg) {
-    ClientData *client_data = (ClientData *)arg;
-    char buffer[1024];
-    char response[1024];
-
-    printf("Handling client ID: %d\n", client_data->client_id);
-
-    while (1) {
-        receive_message(client_data->fifo_path, buffer, sizeof(buffer));
-
-        if (strlen(buffer) == 0) {
-            printf("No command received. Closing client connection.\n");
-            break;
-        }
-
-        char command[32];
-        sscanf(buffer, "%s", command);
-
-        if (strcmp(command, "QUIT") == 0) {
-            snprintf(response, sizeof(response), "DISCONNECTED");
-            send_message(client_data->fifo_path, response);
-            break;
-        } else {
-            snprintf(response, sizeof(response), "UNKNOWN_COMMAND");
-            send_message(client_data->fifo_path, response);
-        }
+    // Resize the shared memory file to fit the semaphore
+    if (ftruncate(shm_fd, sizeof(sem_t)) == -1) {
+        perror("Failed to resize shared memory file");
+        close(shm_fd);
+        exit(EXIT_FAILURE);
     }
 
-    free(client_data); // Free the client data
-    printf("Client connection closed.\n");
-}
-
-void accept_connection(void) {
-    char buffer[1024];
-
-    while (1) {
-        printf("Waiting for client connection...\n");
-
-        sem_wait(&fifo_semaphore); // Wait on semaphore
-        int fd = pipe_open_read(SERVER_FIFO_PATH);
-        sem_post(&fifo_semaphore); // Signal semaphore
-
-        if (fd == -1) {
-            perror("Failed to open server FIFO for reading");
-            continue;
-        }
-
-        if (read(fd, buffer, sizeof(buffer)) > 0) {
-            printf("Client connected: %s\n", buffer);
-
-            int client_id;
-            sscanf(buffer, "CONNECT %d", &client_id);
-
-            ClientData *client_data = malloc(sizeof(ClientData));
-            if (!client_data) {
-                perror("Failed to allocate memory for client data");
-                continue;
-            }
-
-            snprintf(client_data->fifo_path, sizeof(client_data->fifo_path), "/tmp/client_fifo_%d", client_id);
-            client_data->client_id = player_count;
-
-            connected_players[player_count] = client_data; // Store player data
-            player_count++;
-
-            pthread_t client_thread;
-            if (pthread_create(&client_thread, NULL, (void *)handle_client, (void *)client_data) != 0) {
-                perror("Failed to create thread");
-                free(client_data);
-                continue;
-            }
-            pthread_detach(client_thread);
-
-            // Check if two players are connected
-            if (player_count == MAX_CLIENTS) {
-                initialize_game();
-                break; // Exit loop once game starts
-            }
-        }
-
-        pipe_close(fd);
+    // Map the shared memory file into memory
+    sem_connect = mmap(NULL, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (sem_connect == MAP_FAILED) {
+        perror("Failed to map shared memory");
+        close(shm_fd);
+        exit(EXIT_FAILURE);
     }
-}
+    close(shm_fd); // The file descriptor is no longer needed after mmap
 
-
-void initialize_server(void) {
-    if (sem_init(&fifo_semaphore, 0, 1) == -1) { // Binary semaphore with initial value 1
+    // Initialize the unnamed semaphore in shared memory
+    if (sem_init(sem_connect, 1, 0) == -1) { // Shared between processes, initial value = 0
         perror("Failed to initialize semaphore");
+        munmap(sem_connect, sizeof(sem_t));
         exit(EXIT_FAILURE);
     }
+}
 
-    unlink(SERVER_FIFO_PATH); // Remove old FIFO if it exists
+void cleanup_server() {
+    // Destroy FIFOs
+    pipe_destroy(SERVER_READ_FIFO);
+    pipe_destroy(SERVER_WRITE_FIFO);
 
-    if (mkfifo(SERVER_FIFO_PATH, 0666) == -1) { // Create server FIFO
-        perror("Failed to create server FIFO");
-        exit(EXIT_FAILURE);
+    // Destroy the unnamed semaphore
+    if (sem_destroy(sem_connect) == -1) {
+        perror("Failed to destroy semaphore");
     }
 
-    printf("Server FIFO created at path: %s\n", SERVER_FIFO_PATH);
+    // Unmap and remove the shared memory file
+    if (munmap(sem_connect, sizeof(sem_t)) == -1) {
+        perror("Failed to unmap shared memory");
+    }
+    if (unlink(SEMAPHORE_FILE) == -1) {
+        perror("Failed to unlink shared memory file");
+    }
+
+    pthread_mutex_destroy(&fifo_mutex);
+    printf("Server shut down gracefully.\n");
 }
 
 void run_server() {
     initialize_server();
 
     while (1) {
-        accept_connection(); // Wait for clients and handle connections
+        char buffer[BUFFER_SIZE];
+
+        printf("Server: Waiting for a connection...\n");
+
+        // Wait for a client signal on the semaphore
+        if (sem_wait(sem_connect) == -1) {
+            perror("Server: Failed to wait on semaphore");
+            continue;
+        }
+
+        printf("Server: Connection request received.\n");
+
+        int read_fd = pipe_open_read(SERVER_READ_FIFO);
+        if (read_fd == -1) {
+            perror("Server: Failed to open read FIFO");
+            continue;
+        }
+
+        int write_fd = pipe_open_write(SERVER_WRITE_FIFO);
+        if (write_fd == -1) {
+            perror("Server: Failed to open write FIFO");
+            close(read_fd);
+            continue;
+        }
+
+        ssize_t bytes_received = receive_message(read_fd, buffer, BUFFER_SIZE);
+        if (bytes_received < 0) {
+            perror("Server: Failed to receive connection message");
+            close(read_fd);
+            close(write_fd);
+            continue;
+        }
+
+        if (connected_clients >= MAX_CLIENTS) {
+            const char *reject_message = "REJECT";
+            send_message(write_fd, reject_message);
+            printf("Server: Rejected client connection (server full).\n");
+        } else {
+            const char *accept_message = "ACCEPT";
+            send_message(write_fd, accept_message);
+            connected_clients++;
+            printf("Server: Accepted client connection.\n");
+        }
+
+        close(read_fd);
+        close(write_fd);
     }
 
-    sem_destroy(&fifo_semaphore); // Clean up semaphore when server shuts down
+    cleanup_server();
+}
+
+
+void *handle_client(void *arg) {
+    ClientInfo *client_info = (ClientInfo *)arg; // Cast argument to ClientInfo pointer
+    char buffer[BUFFER_SIZE];
+
+    printf("Handling client %d...\n", client_info->client_id);
+
+    while (1) {
+        pthread_mutex_lock(&fifo_mutex);
+
+        // Wait for a client message
+        sem_wait(&sem_read);
+
+        int read_fd = pipe_open_read(SERVER_READ_FIFO);
+        if (read_fd == -1) {
+            perror("Failed to open server read FIFO");
+            pthread_mutex_unlock(&fifo_mutex);
+            break;
+        }
+
+        ssize_t bytes_received = receive_message(read_fd, buffer, BUFFER_SIZE);
+        pipe_close(read_fd);
+
+        pthread_mutex_unlock(&fifo_mutex);
+
+        if (bytes_received <= 0) {
+            printf("Client %d disconnected or error occurred.\n", client_info->client_id);
+            break;
+        }
+
+        printf("Message from client %d: %s\n", client_info->client_id, buffer);
+
+        pthread_mutex_lock(&fifo_mutex);
+
+        int write_fd = pipe_open_write(SERVER_WRITE_FIFO);
+        if (write_fd == -1) {
+            perror("Failed to open server write FIFO");
+            pthread_mutex_unlock(&fifo_mutex);
+            break;
+        }
+
+        const char *response = "Message received by server";
+        if (send_message(write_fd, response) != 0) {
+            perror("Failed to send response to client");
+            pipe_close(write_fd);
+            pthread_mutex_unlock(&fifo_mutex);
+            break;
+        }
+
+        pipe_close(write_fd);
+
+        pthread_mutex_unlock(&fifo_mutex);
+
+        // Signal that the client can write again
+        sem_post(&sem_write);
+
+        // Exit if the client sends "QUIT"
+        if (strcmp(buffer, "QUIT") == 0) {
+            printf("Client %d requested to disconnect.\n", client_info->client_id);
+            break;
+        }
+    }
+
+    return NULL;
 }
