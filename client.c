@@ -1,4 +1,5 @@
 #include "client.h"
+#include "server.h"
 #include "communication.h"
 #include "game-logic.h"
 #include "pipe.h"
@@ -18,6 +19,7 @@
 #define SEMAPHORE_FILE_READ "/home/pastorek10/sem_read" // Path to shared memory file
 #define SEMAPHORE_FILE_WRITE "/home/pastorek10/sem_write" // Path to shared memory file
 #define BUFFER_SIZE 1024
+#define SHM_NAME "/battleship_shm"
 
 sem_t *open_semaphore(const char *file) {
     // Open the shared memory file
@@ -41,7 +43,21 @@ sem_t *open_semaphore(const char *file) {
 
 void run_client() {
     GameBoard board;
-    initialize_board(&board);
+
+    int shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
+    if (shm_fd == -1) {
+        perror("Failed to open shared memory");
+        exit(EXIT_FAILURE);
+    }
+
+    GameData *shared_game_data = mmap(NULL, sizeof(GameData), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (shared_game_data == MAP_FAILED) {
+        perror("Failed to map shared memory");
+        close(shm_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    close(shm_fd);
 
     char buffer[BUFFER_SIZE];
 
@@ -117,6 +133,7 @@ void run_client() {
         close(read_fd);
         exit(EXIT_FAILURE);
     }
+    int player_index;
 
     if (strcmp(buffer, "REJECT") == 0) {
         printf("Client: Connection rejected by server (server full).\n");
@@ -124,8 +141,9 @@ void run_client() {
         close(write_fd);
         close(read_fd);
         exit(EXIT_SUCCESS); // Gracefully terminate
-    } else if (strcmp(buffer, "ACCEPT") == 0) {
+    } else if (sscanf(buffer, "ACCEPT %d", &player_index) == 1) {
         printf("Client: Connection accepted by server.\n");
+        printf("Client: You are Player %d.\n", player_index);
     } else {
         printf("Client: Unknown response from server: %s\n", buffer);
         munmap(&sem_connect, sizeof(sem_t));
@@ -134,55 +152,50 @@ void run_client() {
         exit(EXIT_FAILURE);
     }
 
+
+    print_board(&shared_game_data->board_players[player_index]);
+
     int ships_to_place = 5;
 
-    while (ships_to_place > 0) {
-        printf("Place your ships. Remaining: %d\n", ships_to_place);
-        printf("Enter command (PLACE x y length orientation): ");
+while (ships_to_place > 0) {
+    printf("Place your ships. Remaining: %d\n", ships_to_place);
+    printf("Enter command (PLACE x y length orientation): ");
 
-        // Get user input
-        fgets(buffer, sizeof(buffer), stdin);
+    fgets(buffer, sizeof(buffer), stdin); // Get user input
+    buffer[strcspn(buffer, "\n")] = '\0'; // Remove newline character
 
-        // Remove newline character from input
-        buffer[strcspn(buffer, "\n")] = '\0';
-
-        // Ensure only PLACE commands are allowed
-        if (strncmp(buffer, "PLACE", 5) != 0) {
-            printf("Invalid command. You must place all ships first.\n");
-            continue;
-        }
-
-        // Send PLACE command to the server
-        if (send_message(write_fd, buffer) != 0) {
-            perror("Client: Failed to send command");
-            break;
-        }
-
-        sem_post(sem_read);
-
-        // Wait for server response
-        bytes_received = receive_message(read_fd, buffer, BUFFER_SIZE);
-        if (bytes_received < 0) {
-            perror("Client: Failed to receive response from server");
-            break;
-        }
-
-        printf("Server response: %s\n", buffer);
-
-        if (strcmp(buffer, "PLACE_RESPONSE 1") == 0) {
-            ships_to_place--; // Successfully placed a ship
-            // Receive updated board from server
-            bytes_received = receive_message(read_fd, board.grid, sizeof(board.grid));
-            if (bytes_received < 0) {
-                perror("Client: Failed to receive updated board from server");
-                break;
-            }
-            printf("Board updated from server:\n");
-            print_board(&board);
-        } else {
-            printf("Failed to place ship. Try again.\n");
-        }
+    if (strncmp(buffer, "PLACE", 5) != 0) {
+        printf("Invalid command. You must place all ships first.\n");
+        continue;
     }
+
+    // Send PLACE command to the server
+    if (send_message(write_fd, buffer) != 0) {
+        perror("Client: Failed to send command");
+        break;
+    }
+
+    sem_post(sem_read); // Notify server of new message
+
+    // Wait for server response
+    ssize_t bytes_received = receive_message(read_fd, buffer, BUFFER_SIZE);
+    if (bytes_received < 0) {
+        perror("Client: Failed to receive response from server");
+        break;
+    }
+
+    if (strcmp(buffer, "PLACE_RESPONSE 1") == 0) {
+        ships_to_place--; // Successfully placed a ship
+        system("clear");
+        print_board(&shared_game_data->board_players[player_index]);
+        printf("Ship placed successfully.\n");
+    } else {
+        printf("Failed to place ship. Try again.\n");
+    }
+}
+
+printf("All ships placed! Waiting for other player...\n");
+
 
     // Command loop for communication with the server
     while (1) {

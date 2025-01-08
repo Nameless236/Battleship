@@ -7,7 +7,7 @@
 extern pthread_mutex_t fifo_mutex;
 
 typedef struct {
-    GameBoard *board_players[2];    // Herné mriežky hráčov
+    GameBoard board_players[2];    // Herné mriežky hráčov
     int player_turn;               // ID hráča, ktorý je na ťahu (1 alebo 2)
     int client_id_1;
     int client_id_2;

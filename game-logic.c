@@ -25,13 +25,16 @@ int place_ship(GameBoard *board, int x, int y, int length, char orientation) {
         if (x + length > BOARD_SIZE) {
             return 0; // Out of bounds
         }
-
+        
+        
         // Validate if the space and surroundings are free
         for (int i = x - 1; i <= x + length; i++) {
             for (int j = y - 1; j <= y + 1; j++) {
-                if (i >= 0 && i < BOARD_SIZE && j >= 0 && j < BOARD_SIZE) {
-                    if (board->grid[j][i] != 0) {
-                        return 0; // Space is occupied or adjacent to another ship
+                if(i >=0 && i<=9 && j>=0 && j<=9) {
+                    if (i >= 0 && i < BOARD_SIZE && j >= 0 && j < BOARD_SIZE) {
+                        if (board->grid[j][i] != 0) {
+                            return 0; // Space is occupied or adjacent to another ship
+                        }
                     }
                 }
             }
@@ -50,9 +53,11 @@ int place_ship(GameBoard *board, int x, int y, int length, char orientation) {
         // Validate if the space and surroundings are free
         for (int i = x - 1; i <= x + 1; i++) {
             for (int j = y - 1; j <= y + length; j++) {
-                if (i >= 0 && i < BOARD_SIZE && j >= 0 && j < BOARD_SIZE) {
-                    if (board->grid[j][i] != 0) {
-                        return 0; // Space is occupied or adjacent to another ship
+                if(i >=0 && i<=9 && j>=0 && j<=9) {
+                    if (i >= 0 && i < BOARD_SIZE && j >= 0 && j < BOARD_SIZE) {
+                        if (board->grid[j][i] != 0) {
+                            return 0; // Space is occupied or adjacent to another ship
+                        }
                     }
                 }
             }
