@@ -88,10 +88,10 @@ void create_server_process(const char *server_name) {
     }
 }
 
-bool file_exists(const char *filename) {
-    struct stat buffer;
-    return (stat(filename, &buffer) == 0);
-}
+// bool file_exists(const char *filename) {
+//     struct stat buffer;
+//     return (stat(filename, &buffer) == 0);
+// }
 
 void run_client(int argc, char *argv[]) {
     if (argc < 2) {

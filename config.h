@@ -11,7 +11,7 @@
 #define SEM_RESPONSE_TEMPLATE "/sem_response_%s"
 
 // FIFO templates
-#define SERVER_READ_FIFO_TEMPLATE "/tmp/game_pipes/%s_server_read"
-#define SERVER_WRITE_FIFO_TEMPLATE "/tmp/game_pipes/%s_server_write"
+#define SERVER_READ_FIFO_TEMPLATE "/tmp/%s_server_read"
+#define SERVER_WRITE_FIFO_TEMPLATE "/tmp/%s_server_write"
 
 #endif
