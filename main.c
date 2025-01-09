@@ -1,3 +1,6 @@
+#include <stdio.h>
+#include <stdlib.h>
+
 #ifdef CLIENT
 #include "client.h"
 #endif
@@ -6,14 +9,14 @@
 #include "server.h"
 #endif
 
-int main() {
-#ifdef CLIENT
-    run_client();
-#endif
+int main(int argc, char *argv[]) {
+    #ifdef CLIENT
+    run_client(argc, argv);
+    #endif
 
-#ifdef SERVER
-    run_server();
-#endif
+    #ifdef SERVER
+    run_server(argv[1]);
+    #endif
 
     return 0;
 }

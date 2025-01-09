@@ -4,24 +4,16 @@
 
 // Štruktúra hernej mriežky
 typedef struct {
-    int grid[10][10]; // 0 = prázdne, 1 = loď, 2 = zásah, 3 = minutie
-    int ships_remaining; // Počet zostávajúcich lodí
+    int grid[10][10];   // Player's ships and enemy attacks
+    int ships_remaining;
 } GameBoard;
 
-
-// Štruktúra hráča
 typedef struct {
-    int id;             // ID hráča
-    GameBoard board;    // Jeho herná mriežka
-    int ships_remaining; // Počet zostávajúcich lodí
-    char* name;         // Meno hráča
+    GameBoard ships;
+    GameBoard attacks;
 } Player;
 
-// Štruktúra hry
-typedef struct {
-    Player players[2];  // Maximálne dvaja hráči
-    int current_turn;   // ID hráča, ktorý je na ťahu
-} GameState;
+
 
 // Inicializuje hernú mriežku
 void initialize_board(GameBoard *board);
