@@ -1,332 +1,375 @@
 #include "client.h"
-#include "server.h"
 #include "communication.h"
 #include "game-logic.h"
 #include "pipe.h"
+#include "config.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <semaphore.h>
 #include <fcntl.h>
-#include <sys/mman.h> // For mmap
-#include <sys/stat.h> // For mode constants
+#include <stdbool.h>
+#include "server.h"
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include "config.h"
 
+// In client.h
+typedef struct {
+    GameBoard my_board;
+    GameBoard enemy_board;
+    int ships_to_place;
+    int board_ready;
+} ClientGameState;
 
-#define SERVER_READ_FIFO "/tmp/server_read_fifo"
-#define SERVER_WRITE_FIFO "/tmp/server_write_fifo"
-#define SEMAPHORE_FILE "/home/pastorek10/sem_connect" // Path to shared memory file
-#define SEMAPHORE_FILE_READ "/home/pastorek10/sem_read" // Path to shared memory file
-#define SEMAPHORE_FILE_WRITE "/home/pastorek10/sem_write" // Path to shared memory file
-#define BUFFER_SIZE 1024
-#define SHM_NAME "/battleship_shm"
+typedef struct {
+    int write_fd;
+    int read_fd;
+    int client_id;
+    ClientGameState *game_state;
+    sem_t *sem_command;    // For sending commands
+    sem_t *sem_response;   // For reading responses
+} ThreadArgs;
 
-sem_t *open_semaphore(const char *file) {
-    // Open the shared memory file
-    int shm_fd = open(file, O_RDWR, 0666); // Open existing shared memory file
-    if (shm_fd == -1) {
-        perror("Failed to open shared memory file");
-        return NULL;
-    }
-
-    // Map the shared memory file into memory
-    sem_t *semaphore = mmap(NULL, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    if (semaphore == MAP_FAILED) {
-        perror("Failed to map shared memory");
-        close(shm_fd);
-        return NULL;
-    }
-
-    close(shm_fd); // File descriptor no longer needed after mmap
-    return semaphore;
+void initialize_client_game_state(ClientGameState *state) {
+    initialize_board(&state->my_board);
+    initialize_board(&state->enemy_board);
+    state->ships_to_place = 5;  // Set initial number of ships
+    state->board_ready = 0;
 }
 
-void run_client() {
-    GameBoard board;
+// void *handle_updates(void *arg) {
+//     ThreadArgs *args = (ThreadArgs *)arg;
+//     char buffer[BUFFER_SIZE];
 
-    int shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
-    if (shm_fd == -1) {
-        perror("Failed to open shared memory");
+//     while (1) {
+//         if (receive_message(args->read_fd, buffer, BUFFER_SIZE) == 0) {
+//             printf("%s\n", buffer);
+//             char expected_prefix[BUFFER_SIZE];
+//             snprintf(expected_prefix, sizeof(expected_prefix), "CLIENT_%d:", args->client_id);
+            
+//             if (strncmp(buffer, expected_prefix, strlen(expected_prefix)) == 0) {
+//                 char *message = buffer + strlen(expected_prefix);
+//                 printf("Server: %s\n", message);
+
+//                 if (strncmp(message, "PLACE_RESULT 1", 14) == 0) {
+//                     printf("Ship placed successfully!\n");
+//                 } else if (strncmp(message, "PLACE_RESULT 0", 14) == 0) {
+//                     printf("Failed to place ship. Try again.\n");
+//                 } else if (strcmp(message, "GAME_START") == 0) {
+//                     printf("Game is starting! All players connected.\n");
+//                 }
+//             }
+//         }
+//         usleep(100000);
+//     }
+//     return NULL;
+// }
+
+void create_server_process(const char *server_name) {
+    pid_t pid = fork();
+
+    if (pid == 0) {
+        // Child process: Start the server
+        run_server(server_name);
+    } else if (pid > 0) {
+        // Parent process: Log success
+        printf("Server process created with PID: %d\n", pid);
+    } else {
+        // Fork failed
+        perror("Failed to create server process");
+        exit(EXIT_FAILURE);
+    }
+}
+
+bool file_exists(const char *filename) {
+    struct stat buffer;
+    return (stat(filename, &buffer) == 0);
+}
+
+void run_client(int argc, char *argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <server_name>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
-    GameData *shared_game_data = mmap(NULL, sizeof(GameData), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    if (shared_game_data == MAP_FAILED) {
-        perror("Failed to map shared memory");
-        close(shm_fd);
+    const char *server_name = argv[1];
+
+    // Generate unique semaphore names
+    char sem_connect_name[BUFFER_SIZE];
+    char sem_command_name[BUFFER_SIZE];
+    char sem_response_name[BUFFER_SIZE];
+    snprintf(sem_connect_name, sizeof(sem_connect_name), SEM_CONNECT_TEMPLATE, server_name);
+    snprintf(sem_command_name, sizeof(sem_command_name), SEM_COMMAND_TEMPLATE, server_name);
+    snprintf(sem_response_name, sizeof(sem_response_name), SEM_RESPONSE_TEMPLATE, server_name);
+
+    sem_unlink(sem_connect_name);
+    sem_t *sem_connect = sem_open(sem_connect_name, O_CREAT | O_EXCL, 0666, 0);
+
+    // Open SEM_CONNECT semaphore to wait for server readiness
+    
+    if (sem_connect == SEM_FAILED) {
+        perror("Failed to open SEM_CONNECT semaphore");
         exit(EXIT_FAILURE);
     }
 
-    close(shm_fd);
+    // Check if the server FIFOs exist; if not, create a new server process
+    char server_read_fifo[BUFFER_SIZE];
+    char server_write_fifo[BUFFER_SIZE];
+    snprintf(server_read_fifo, sizeof(server_read_fifo), SERVER_READ_FIFO_TEMPLATE, server_name);
+    snprintf(server_write_fifo, sizeof(server_write_fifo), SERVER_WRITE_FIFO_TEMPLATE, server_name);
 
-    char buffer[BUFFER_SIZE];
+    if (access(server_read_fifo, F_OK) == -1 || access(server_write_fifo, F_OK) == -1) {
+        printf("Server does not exist. Creating a new server...\n");
+        create_server_process(server_name);
 
-    printf("Client: Connecting to server...\n");
+        printf("Waiting for server initialization...\n");
+        sem_wait(sem_connect);
+    }
+
+    printf("Server is ready. Connecting...\n");
 
     // Open FIFOs for communication
-    int write_fd = pipe_open_write(SERVER_READ_FIFO);
-    if (write_fd == -1) {
-        perror("Client: Failed to open write FIFO");
+    int write_fd = pipe_open_write(server_read_fifo);
+    int read_fd = pipe_open_read(server_write_fifo);
+
+    if (write_fd == -1 || read_fd == -1) {
+        perror("Failed to open pipes");
         exit(EXIT_FAILURE);
     }
-
-    int read_fd = pipe_open_read(SERVER_WRITE_FIFO);
-    if (read_fd == -1) {
-        perror("Client: Failed to open read FIFO");
-        close(write_fd);
-        exit(EXIT_FAILURE);
-    }
-
-    // Send connection request to the server
-    const char *connect_message = "CONNECT";
-    if (send_message(write_fd, connect_message) != 0) {
-        perror("Client: Failed to send connection message");
-        close(write_fd);
-        close(read_fd);
-        exit(EXIT_FAILURE);
-    }
-    printf("Client: Sent connection request.\n");
-
-    // Open existing named semaphores
-    sem_t *sem_connect = sem_open("/sem_connect", 0); // Open without creating
-    if (sem_connect == SEM_FAILED) {
-        perror("Client: Failed to open /sem_connect semaphore");
-        close(write_fd);
-        close(read_fd);
-        exit(EXIT_FAILURE);
-    }
-
-    sem_t *sem_read = sem_open("/sem_read", 0); // Open without creating
-    if (sem_read == SEM_FAILED) {
-        perror("Client: Failed to open /sem_read semaphore");
-        close(write_fd);
-        close(read_fd);
-        exit(EXIT_FAILURE);
-    }
-
-    sem_t *sem_write = sem_open("/sem_write", 0); // Open without creating
-    if (sem_write == SEM_FAILED) {
-        perror("Client: Failed to open /sem_write semaphore");
-        close(write_fd);
-        close(read_fd);
-        exit(EXIT_FAILURE);
-    }
-
-    printf("%p\n", &sem_connect);
-
-    // Signal the server's semaphore
-    if (sem_post(sem_connect) == -1) {
-        perror("Client: Failed to signal semaphore");
-        munmap(&sem_connect, sizeof(sem_t));
-        close(write_fd);
-        close(read_fd);
-        exit(EXIT_FAILURE);
-    }
-    printf("Client: Signaled semaphore.\n");
-
-    // Wait for acknowledgment from the server
-    ssize_t bytes_received = receive_message(read_fd, buffer, BUFFER_SIZE);
-    if (bytes_received < 0) {
-        perror("Client: Failed to receive acknowledgment from server");
-        munmap(&sem_connect, sizeof(sem_t));
-        close(write_fd);
-        close(read_fd);
-        exit(EXIT_FAILURE);
-    }
-    int player_index;
-
-    if (strcmp(buffer, "REJECT") == 0) {
-        printf("Client: Connection rejected by server (server full).\n");
-        munmap(&sem_connect, sizeof(sem_t));
-        close(write_fd);
-        close(read_fd);
-        exit(EXIT_SUCCESS); // Gracefully terminate
-    } else if (sscanf(buffer, "ACCEPT %d", &player_index) == 1) {
-        printf("Client: Connection accepted by server.\n");
-        printf("Client: You are Player %d.\n", player_index);
-    } else {
-        printf("Client: Unknown response from server: %s\n", buffer);
-        munmap(&sem_connect, sizeof(sem_t));
-        close(write_fd);
-        close(read_fd);
-        exit(EXIT_FAILURE);
-    }
-
-
-    print_board(&shared_game_data->board_players[player_index]);
-
-    int ships_to_place = 5;
-
-while (ships_to_place > 0) {
-    printf("Place your ships. Remaining: %d\n", ships_to_place);
-    printf("Enter command (PLACE x y length orientation): ");
-
-    fgets(buffer, sizeof(buffer), stdin); // Get user input
-    buffer[strcspn(buffer, "\n")] = '\0'; // Remove newline character
-
-    if (strncmp(buffer, "PLACE", 5) != 0) {
-        printf("Invalid command. You must place all ships first.\n");
-        continue;
-    }
-
-    // Send PLACE command to the server
-    if (send_message(write_fd, buffer) != 0) {
-        perror("Client: Failed to send command");
-        break;
-    }
-
-    sem_post(sem_read); // Notify server of new message
-
-    // Wait for server response
-    ssize_t bytes_received = receive_message(read_fd, buffer, BUFFER_SIZE);
-    if (bytes_received < 0) {
-        perror("Client: Failed to receive response from server");
-        break;
-    }
-
-    if (strcmp(buffer, "PLACE_RESPONSE 1") == 0) {
-        ships_to_place--; // Successfully placed a ship
-        system("clear");
-        print_board(&shared_game_data->board_players[player_index]);
-        printf("Ship placed successfully.\n");
-    } else {
-        printf("Failed to place ship. Try again.\n");
-    }
-}
-
-printf("All ships placed! Waiting for other player...\n");
-
-
-    // Command loop for communication with the server
-    while (1) {
-        char command[BUFFER_SIZE];
-
-        while (board.ships_remaining >= 0) {
-            print_board(&board);
-        }
-
-        printf("Enter command (ATTACK x y | QUIT): ");
-
-        // Get user input
-        fgets(command, sizeof(command), stdin);
-
-        // Remove newline character from input
-        command[strcspn(command, "\n")] = '\0';
-
-        // Send command to the server
-        if (send_message(write_fd, command) != 0) {
-            perror("Client: Failed to send command");
-            break;
-        }
-
-        sem_post(sem_read);
-
-        // Exit loop if the client sends QUIT command
-        if (strcmp(command, "QUIT") == 0) {
-            printf("Client: Disconnecting from server.\n");
-            break;
-        }
-
-        // Wait for response from the server
-        bytes_received = receive_message(read_fd, buffer, BUFFER_SIZE);
-        if (bytes_received < 0) {
-            perror("Client: Failed to receive response from server");
-            break;
-        }
-
-        buffer[bytes_received] = '\0'; // Null-terminate the string
-
-        printf("Server response: %s\n", buffer);
-
-        // Exit if the server indicates game over or disconnection
-        if (strcmp(buffer, "GAME_OVER") == 0 || strcmp(buffer, "DISCONNECTED") == 0) {
-            printf("Client: Server ended communication.\n");
-            break;
-        }
-    }
-
-    munmap(sem_connect, sizeof(sem_t));
-     munmap(sem_read, sizeof(sem_t));
-     munmap(sem_write, sizeof(sem_t));
-     close(write_fd);
-     close(read_fd);
-
-
-    printf("Client: Shutting down.\n");
-}
-
-
-
-int connect_to_server(const char *server_fifo, const char *client_fifo) {
-    char connect_msg[BUFFER_SIZE];
-
-    // Send client's unique FIFO path as connection message
-    snprintf(connect_msg, sizeof(connect_msg), "%s", client_fifo);
-
-    // Open server's write FIFO and send connection message
-    int server_fd = pipe_open_write(server_fifo);
-    if (server_fd == -1) {
-        perror("Failed to open server FIFO for writing");
-        return -1;
-    }
-
-    if (send_message(server_fd, connect_msg) != 0) {
-        pipe_close(server_fd);
-        return -1;
-    }
-    pipe_close(server_fd);
-
-    printf("Connection request sent to server.\n");
-
-    return 0;
-}
-
-void play_game(const char *server_fifo, const char *client_fifo) {
-    char buffer[BUFFER_SIZE];
-    char command[BUFFER_SIZE];
-
-    while (1) {
-        printf("Enter command (PLACE x y length orientation | ATTACK x y | QUIT): ");
-
-        // Get user input
-        fgets(command, sizeof(command), stdin);
-
-        // Remove newline character from input
-        command[strcspn(command, "\n")] = '\0';
-
-        // Open the server's write FIFO and send command
-        int write_fd = pipe_open_write(server_fifo);
-        if (write_fd == -1) {
-            perror("Failed to open server FIFO for writing");
-            break;
-        }
-        if (send_message(write_fd, command) != 0) {
-            pipe_close(write_fd);
-            break;
-        }
+    // Send connection request
+    if (send_message(write_fd, "CONNECT") != 0) {
+        perror("Failed to send connection request");
         pipe_close(write_fd);
-
-        // Exit loop if the client sends QUIT command
-        if (strcmp(command, "QUIT") == 0) {
-            break;
-        }
-
-        // Open the client's read FIFO and wait for response from server
-        int read_fd = pipe_open_read(client_fifo);
-        if (read_fd == -1) {
-            perror("Failed to open client FIFO for reading");
-            break;
-        }
-        if (receive_message(read_fd, buffer, sizeof(buffer)) != 0) {
-            pipe_close(read_fd);
-            break;
-        }
         pipe_close(read_fd);
+        exit(EXIT_FAILURE);
+    }
 
-        printf("Server response: %s\n", buffer);
+    ClientGameState *game_state = malloc(sizeof(ClientGameState));
+    initialize_client_game_state(game_state);
 
-        if (strcmp(buffer, "GAME_OVER") == 0 || strcmp(buffer, "DISCONNECTED") == 0) {
-            break;
+    // Open command and response semaphores
+    sem_t *sem_command = sem_open(sem_command_name, O_CREAT, 0666, 0);
+    sem_t *sem_response = sem_open(sem_response_name, O_CREAT, 0666, 0);
+
+    if (sem_command == SEM_FAILED || sem_response == SEM_FAILED) {
+        perror("Failed to open command/response semaphores");
+        free(game_state);
+        pipe_close(write_fd);
+        pipe_close(read_fd);
+        sem_close(sem_connect);
+        exit(EXIT_FAILURE);
+    }
+
+    // Prepare thread arguments
+    ThreadArgs thread_args = {
+        .write_fd = write_fd,
+        .read_fd = read_fd,
+        .client_id = -1,
+        .game_state = game_state,
+        .sem_command = sem_command,
+        .sem_response = sem_response
+    };
+
+    // Wait for CLIENT_ID from the server
+    char buffer[BUFFER_SIZE];
+    int client_id = -1;
+    int retry_count = 0;
+    const int MAX_RETRIES = 10;
+
+    while (retry_count < MAX_RETRIES && client_id == -1) {
+        int result = receive_message(read_fd, buffer, BUFFER_SIZE);
+        printf("%s\n", buffer);
+        if (result == 0 && strncmp(buffer, "CLIENT_ID:", 10) == 0 ){
+                sscanf(buffer + 10, "%d", &client_id);
+                thread_args.client_id = client_id;
+                printf("Successfully connected with ID: %d\n", client_id);
+
+                pthread_t command_thread, update_thread;
+                pthread_create(&command_thread, NULL, handle_commands, &thread_args);
+                pthread_create(&update_thread, NULL, handle_updates, &thread_args);
+
+                pthread_join(command_thread, NULL);
+                pthread_join(update_thread, NULL);
+
+                break;
+            
+        } else if (strncmp(buffer, "REJECT", 6) == 0) {
+            printf("Connection rejected by the server. The game is full.\n");
+            pipe_close(write_fd);
+            pipe_close(read_fd);
+            sem_close(sem_connect);
+            exit(EXIT_SUCCESS); // Exit gracefully since rejection is not an error
+        } else {
+            printf("Unexpected response from the server: %s\n", buffer);
+        }
+        retry_count++;
+        usleep(100000); // Retry after a short delay
+    }
+
+    // Cleanup resources
+    sem_close(thread_args.sem_command);
+    sem_close(thread_args.sem_response);
+
+    free(game_state);
+
+    pipe_close(write_fd);
+    pipe_close(read_fd);
+
+    if (client_id == -1) {
+        printf("Failed to receive server acknowledgment\n");
+        exit(EXIT_FAILURE);
+    }
+}
+
+
+
+void *handle_commands(void *arg) {
+    ThreadArgs *args = (ThreadArgs *)arg;
+    ClientGameState *game_state = args->game_state;
+    char buffer[BUFFER_SIZE];
+    // Print the current state of the player's board
+    
+
+    while (game_state->ships_to_place > 0) {
+        system("clear");
+        printf("\nYour current board:\n");
+        print_board(&game_state->my_board);
+        // Prompt the user to place a ship
+        printf("Ships remaining %d\n", game_state->ships_to_place);
+        printf("\nEnter ship placement (PLACE x y length orientation): ");
+        
+        fgets(buffer, sizeof(buffer), stdin);
+
+        // Parse and validate the input
+        int x, y, length;
+        char orientation;
+        if (sscanf(buffer, "PLACE %d %d %d %c", &x, &y, &length, &orientation) == 4) {
+            // Attempt to place the ship locally on the client's board
+            int result = place_ship(&game_state->my_board, x, y, length, orientation);
+            if (result == 1) {
+                printf("Ship placed successfully!\n");
+                game_state->ships_to_place--; // Decrement remaining ships to place
+
+                // Notify the server about the successful placement
+                snprintf(buffer, sizeof(buffer), "CLIENT_%d:PLACE %d %d %d %c",
+                         args->client_id, x, y, length, orientation);
+            } else {
+                printf("Failed to place ship. Invalid position or overlap. Try again.\n");
+            }
+        } else {
+            printf("Invalid input. Please use the format: PLACE x y length orientation\n");
         }
     }
+
+    // Notify that all ships have been placed
+    printf("\nAll ships placed! Notifying server...\n");
+    // snprintf(buffer, sizeof(buffer), "CLIENT_%d:BOARD_READY", args->client_id);
+    // send_message(args->write_fd, buffer);
+
+    // Mark the board as ready
+    game_state->board_ready = 1;
+
+    send_board_to_server(args->write_fd, args->client_id, &game_state->my_board);
+
+    while(1) {
+
+         if (strncmp(buffer, "ATTACK", 6) == 0 && game_state->board_ready) {
+            int x, y;
+            if (sscanf(buffer, "ATTACK %d %d", &x, &y) == 2) {
+                // Notify the server about the attack
+                snprintf(buffer, sizeof(buffer), "CLIENT_%d:ATTACK %d %d", args->client_id, x, y);
+                send_message(args->write_fd, buffer);
+
+                // Wait for the server's response
+                printf("Waiting for attack result...\n");
+                if (sem_wait(args->sem_response) == -1) {
+                    perror("Failed to wait for response signal");
+                    continue;
+                }
+
+                // The server will provide feedback via `handle_updates`
+            } else {
+                printf("Invalid input. Use: ATTACK x y\n");
+            }
+        }
+        // Handle quit command
+        else if (strncmp(buffer, "QUIT", 4) == 0) {
+            printf("Quitting the game...\n");
+
+            // Notify the server about quitting
+            snprintf(buffer, sizeof(buffer), "CLIENT_%d:QUIT", args->client_id);
+            send_message(args->write_fd, buffer);
+
+            break; // Exit the loop and terminate the thread
+        }
+    }
+
+    return NULL;
+}
+
+
+void *handle_updates(void *arg) {
+    ThreadArgs *args = (ThreadArgs *)arg;
+    char buffer[BUFFER_SIZE];
+    
+    while (1) {
+        if (sem_wait(args->sem_response) == -1) {
+            perror("Failed to wait for response signal");
+            continue;
+        }
+
+        if (receive_message(args->read_fd, buffer, BUFFER_SIZE) == 0) {
+            char expected_prefix[BUFFER_SIZE];
+            snprintf(expected_prefix, sizeof(expected_prefix), "CLIENT_%d:", args->client_id);
+            
+            if (strncmp(buffer, expected_prefix, strlen(expected_prefix)) == 0) {
+                char *message = buffer + strlen(expected_prefix);
+                printf("Server: %s\n", message);
+
+                if (strncmp(message, "ATTACK_RESULT", 13) == 0) {
+                    int x, y;
+                    char result;
+
+                    if (sscanf(message + 14, "%c", &result) == 0) {
+                        if (result == 'H') {
+                            printf("You hit a ship at (%d, %d)!\n", x, y);
+                            args->game_state->enemy_board.grid[x][y] = 2;
+                        } else if (result == 'M') {
+                            printf("You missed at (%d, %d).\n", x, y);
+                            args->game_state->enemy_board.grid[x][y] = 3;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
+void send_board_to_server(int write_fd, int client_id, GameBoard *board) {
+    char buffer[BUFFER_SIZE];
+    char serialized_board[BOARD_SIZE * BOARD_SIZE + 1]; // For a 10x10 board + null terminator
+    int index = 0;
+
+    // Serialize the board into a single string
+    for (int i = 0; i < BOARD_SIZE; i++) {
+        for (int j = 0; j < BOARD_SIZE; j++) {
+            serialized_board[index++] = (board->grid[i][j] == 0) ? 'A' : 'B';
+        }
+    }
+    serialized_board[index] = '\0'; // Null-terminate the string
+
+    // Send the serialized board to the server
+    snprintf(buffer, sizeof(buffer), "CLIENT_%d:SEND_BOARD-%s", client_id, serialized_board);
+    send_message(write_fd, buffer);
+
+    printf("Board sent to server:\n");
+    print_board(board); // Print the board for debugging
 }

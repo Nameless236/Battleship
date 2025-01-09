@@ -1,29 +1,27 @@
-#pragma once
+#ifndef SERVER_H
+#define SERVER_H
 
-#include <pthread.h>
 #include "game-logic.h"
+#include <pthread.h>
 
-// Mutex for synchronizing access to FIFOs
-extern pthread_mutex_t fifo_mutex;
+#define MAX_CLIENTS 2
 
 typedef struct {
-    GameBoard board_players[2];    // Herné mriežky hráčov
-    int player_turn;               // ID hráča, ktorý je na ťahu (1 alebo 2)
+    GameBoard board_players[MAX_CLIENTS];
+    int player_turn;
     int client_id_1;
     int client_id_2;
+    int boards_ready[2];
+    int game_started;
 } GameData;
 
-// Structure to store client-specific information
-typedef struct {
-    int client_id; // Unique ID for the client
-    GameData *game_data; // Pointer to shared game data
-} ClientInfo;
 
-// Initialize the server resources
-void initialize_server(void);
+void initialize_server(const char *server_name);
+void cleanup_server(const char *server_name);
+void run_server(const char *server_name);
+void handle_client_message(int client_id, const char *message, const char *server_name, GameData *game_data);
+void send_message_to_client(int client_id, const char *server_name, const char *message) ;
+void handle_board_message(int client_id, const char *message, GameData *game_data);
+void initialize_game(GameData *game_data);
 
-// Run the server loop to handle clients
-void run_server(void);
-
-// Handle communication with a single client (thread function)
-void *handle_client(void *arg);
+#endif

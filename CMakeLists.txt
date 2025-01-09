@@ -11,7 +11,7 @@ project(
 add_library(common pipe.c communication.c game-logic.c)
 
 # Client executable
-add_executable(client client.c main.c)
+add_executable(client client.c main.c server.c)
 target_link_libraries(client PRIVATE common)
 target_compile_definitions(client PRIVATE CLIENT)
 
