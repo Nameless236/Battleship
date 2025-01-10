@@ -28,6 +28,7 @@ int receive_message(int fd, char *buffer, size_t buffer_size) {
     ssize_t bytes_read = read(fd, buffer, buffer_size - 1); // Leave space for null terminator
     if (bytes_read > 0) {
         buffer[bytes_read] = '\0'; // Null-terminate the string
+        printf("Message received: %s\n", buffer);
         return 0;
     } else if (bytes_read == 0) {
         fprintf(stderr, "No data available in FIFO.\n");
