@@ -40,7 +40,7 @@ typedef struct {
 void initialize_client_game_state(ClientGameState *state) {
     initialize_board(&state->my_board);
     initialize_board(&state->enemy_board);
-    state->ships_to_place = 5;  // Set initial number of ships
+    state->ships_to_place = 2;  // Set initial number of ships
     state->board_ready = 0;
 }
 
@@ -53,7 +53,7 @@ void initialize_client_game_state(ClientGameState *state) {
 //             printf("%s\n", buffer);
 //             char expected_prefix[BUFFER_SIZE];
 //             snprintf(expected_prefix, sizeof(expected_prefix), "CLIENT_%d:", args->client_id);
-            
+
 //             if (strncmp(buffer, expected_prefix, strlen(expected_prefix)) == 0) {
 //                 char *message = buffer + strlen(expected_prefix);
 //                 printf("Server: %s\n", message);
@@ -107,13 +107,12 @@ void run_client(int argc, char *argv[]) {
     char sem_response_name[BUFFER_SIZE];
     snprintf(sem_connect_name, sizeof(sem_connect_name), SEM_CONNECT_TEMPLATE, server_name);
     snprintf(sem_command_name, sizeof(sem_command_name), SEM_COMMAND_TEMPLATE, server_name);
-    snprintf(sem_response_name, sizeof(sem_response_name), SEM_RESPONSE_TEMPLATE, server_name);
 
     sem_unlink(sem_connect_name);
     sem_t *sem_connect = sem_open(sem_connect_name, O_CREAT | O_EXCL, 0666, 0);
 
     // Open SEM_CONNECT semaphore to wait for server readiness
-    
+
     if (sem_connect == SEM_FAILED) {
         perror("Failed to open SEM_CONNECT semaphore");
         exit(EXIT_FAILURE);
@@ -156,9 +155,8 @@ void run_client(int argc, char *argv[]) {
 
     // Open command and response semaphores
     sem_t *sem_command = sem_open(sem_command_name, O_CREAT, 0666, 0);
-    sem_t *sem_response = sem_open(sem_response_name, O_CREAT, 0666, 0);
 
-    if (sem_command == SEM_FAILED || sem_response == SEM_FAILED) {
+    if (sem_command == SEM_FAILED) {
         perror("Failed to open command/response semaphores");
         free(game_state);
         pipe_close(write_fd);
@@ -174,7 +172,7 @@ void run_client(int argc, char *argv[]) {
         .client_id = -1,
         .game_state = game_state,
         .sem_command = sem_command,
-        .sem_response = sem_response
+        .sem_response = NULL
     };
 
     // Wait for CLIENT_ID from the server
@@ -189,6 +187,20 @@ void run_client(int argc, char *argv[]) {
         if (result == 0 && strncmp(buffer, "CLIENT_ID:", 10) == 0 ){
                 sscanf(buffer + 10, "%d", &client_id);
                 thread_args.client_id = client_id;
+
+                snprintf(sem_response_name, sizeof(sem_response_name), SEM_RESPONSE_TEMPLATE, server_name, client_id);
+                sem_t *sem_response = sem_open(sem_response_name, O_CREAT, 0666, 0);
+                if (sem_response == SEM_FAILED) {
+                    perror("Failed to open response semaphores");
+                    free(game_state);
+                    pipe_close(write_fd);
+                    pipe_close(read_fd);
+                    sem_close(sem_response);
+                    exit(EXIT_FAILURE);
+                }
+                printf("Sem_responce_name: %s\n", sem_response_name);
+                thread_args.sem_response = sem_response;
+
                 printf("Successfully connected with ID: %d\n", client_id);
 
                 pthread_t command_thread, update_thread;
@@ -199,7 +211,7 @@ void run_client(int argc, char *argv[]) {
                 pthread_join(update_thread, NULL);
 
                 break;
-            
+
         } else if (strncmp(buffer, "REJECT", 6) == 0) {
             printf("Connection rejected by the server. The game is full.\n");
             pipe_close(write_fd);
@@ -235,7 +247,6 @@ void *handle_commands(void *arg) {
     ClientGameState *game_state = args->game_state;
     char buffer[BUFFER_SIZE];
     // Print the current state of the player's board
-    
 
     while (game_state->ships_to_place > 0) {
         system("clear");
@@ -244,7 +255,7 @@ void *handle_commands(void *arg) {
         // Prompt the user to place a ship
         printf("Ships remaining %d\n", game_state->ships_to_place);
         printf("\nEnter ship placement (PLACE x y length orientation): ");
-        
+
         fgets(buffer, sizeof(buffer), stdin);
 
         // Parse and validate the input
@@ -278,36 +289,34 @@ void *handle_commands(void *arg) {
 
     send_board_to_server(args->write_fd, args->client_id, &game_state->my_board);
 
-    while(1) {
 
-         if (strncmp(buffer, "ATTACK", 6) == 0 && game_state->board_ready) {
+    while(1) {
+        printf("Handle commands: after all ships are ready \n");
+
+        printf("\nEnter ATTACK placement (ATTACK x y) or QUIT: ");
+
+        fgets(buffer, sizeof(buffer), stdin);
+
+         if (strncmp(buffer, "ATTACK", 6) == 0) {
             int x, y;
             if (sscanf(buffer, "ATTACK %d %d", &x, &y) == 2) {
                 // Notify the server about the attack
-                snprintf(buffer, sizeof(buffer), "CLIENT_%d:ATTACK %d %d", args->client_id, x, y);
+                snprintf(buffer, sizeof(buffer), "CLIENT_%d:ATTACK_%d_%d", args->client_id, x, y);
                 send_message(args->write_fd, buffer);
 
                 // Wait for the server's response
                 printf("Waiting for attack result...\n");
-                if (sem_wait(args->sem_response) == -1) {
-                    perror("Failed to wait for response signal");
-                    continue;
-                }
-
-                // The server will provide feedback via `handle_updates`
             } else {
                 printf("Invalid input. Use: ATTACK x y\n");
             }
         }
         // Handle quit command
-        else if (strncmp(buffer, "QUIT", 4) == 0) {
+        if (strncmp(buffer, "QUIT", 4) == 0) {
             printf("Quitting the game...\n");
 
-            // Notify the server about quitting
             snprintf(buffer, sizeof(buffer), "CLIENT_%d:QUIT", args->client_id);
             send_message(args->write_fd, buffer);
-
-            break; // Exit the loop and terminate the thread
+            break;
         }
     }
 
@@ -318,36 +327,71 @@ void *handle_commands(void *arg) {
 void *handle_updates(void *arg) {
     ThreadArgs *args = (ThreadArgs *)arg;
     char buffer[BUFFER_SIZE];
-    
+
     while (1) {
+        printf("Wait before handle update message... \n");
+
         if (sem_wait(args->sem_response) == -1) {
-            perror("Failed to wait for response signal");
+            perror("Failed to wait for response signal from client");
             continue;
         }
 
         if (receive_message(args->read_fd, buffer, BUFFER_SIZE) == 0) {
+            printf("Receive message: %s\n", buffer);
             char expected_prefix[BUFFER_SIZE];
             snprintf(expected_prefix, sizeof(expected_prefix), "CLIENT_%d:", args->client_id);
-            
+            printf("Expected prefix: %s\n", expected_prefix);
             if (strncmp(buffer, expected_prefix, strlen(expected_prefix)) == 0) {
                 char *message = buffer + strlen(expected_prefix);
-                printf("Server: %s\n", message);
+                printf("Received message: %s\n", message);
 
-                if (strncmp(message, "ATTACK_RESULT", 13) == 0) {
+                // Spracovanie správy ALL_BOARDS_READY
+                if (strncmp(message, "BOARD_RECEIVED", 13) == 0) {
+                    print_boards(&args->game_state->my_board, &args->game_state->enemy_board);
+                }
+                // Spracovanie správy ATTACK_RESULT
+                else if (strncmp(message, "ATTACK_RESULT", 13) == 0) {
                     int x, y;
                     char result;
 
-                    if (sscanf(message + 14, "%c", &result) == 0) {
+                    if (sscanf(message + 14, "%c_%d_%d", &result, &x, &y) == 3) {
                         if (result == 'H') {
                             printf("You hit a ship at (%d, %d)!\n", x, y);
-                            args->game_state->enemy_board.grid[x][y] = 2;
+                            args->game_state->enemy_board.grid[x][y] = 2; // Zásah)
                         } else if (result == 'M') {
                             printf("You missed at (%d, %d).\n", x, y);
-                            args->game_state->enemy_board.grid[x][y] = 3;
+                            args->game_state->enemy_board.grid[x][y] = 3; // Minutie
                         }
                     }
+                    print_boards(&args->game_state->my_board, &args->game_state->enemy_board);
+                } else if (strncmp(message, "OPPONENT_QUIT", 13) == 0) {
+                    printf("Your opponent has quit the game. You win!\n");
+
+                    sem_close(args->sem_command);
+                    sem_close(args->sem_response);
+                    free(args->game_state);
+                    pipe_close(args->write_fd);
+                    pipe_close(args->read_fd);
+
+                    printf("Exiting client...\n");
+                    exit(EXIT_SUCCESS);
+                } else if (strncmp(message, "MY_QUIT", 6) == 0) {
+                    printf("I have quit the game. I lose!\n");
+
+                    sem_close(args->sem_command);
+                    sem_close(args->sem_response);
+                    free(args->game_state);
+                    pipe_close(args->write_fd);
+                    pipe_close(args->read_fd);
+
+                    printf("Exiting client...\n");
+                    exit(EXIT_SUCCESS);
                 }
+            } else {
+                printf("Unexpected message format: %s\n", buffer);
             }
+        } else {
+            perror("Failed to receive message from server");
         }
     }
     return NULL;

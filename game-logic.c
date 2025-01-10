@@ -130,3 +130,51 @@ void print_board(GameBoard *board) {
         printf("\n");
     }
 }
+
+
+void print_boards(GameBoard *my_board, GameBoard *enemy_board) {
+    printf("   Vaša mapa:                          Superova mapa:\n");
+    printf("   ");
+
+    for (int j = 0; j < BOARD_SIZE; j++) {
+        printf(" %d ", j);
+    }
+    printf("          ");
+    for (int j = 0; j < BOARD_SIZE; j++) {
+        printf(" %d ", j);
+    }
+    printf("\n");
+
+    for (int i = 0; i < BOARD_SIZE; i++) {
+        printf(" %d ", i);
+        for (int j = 0; j < BOARD_SIZE; j++) {
+            char cell = my_board->grid[i][j];
+            if (cell == 0) {
+                printf("[ ]"); // Voda
+            } else if (cell == 1) {
+                printf("[L]"); // Loď
+            } else if (cell == 2) {
+                printf("[X]"); // Zásah
+            } else if (cell == 3) {
+                printf("[~]"); // Minutie
+            }
+        }
+
+        printf("       ");
+
+        printf(" %d ", i);
+        for (int j = 0; j < BOARD_SIZE; j++) {
+            char cell = enemy_board->grid[i][j];
+            if (cell == 0 || cell == 1) {
+                printf("[ ]"); // Voda alebo neodhalená loď
+            } else if (cell == 2) {
+                printf("[X]"); // Zásah
+            } else if (cell == 3) {
+                printf("[~]"); // Minutie
+            }
+        }
+        printf("\n");
+    }
+}
+
+

@@ -29,3 +29,4 @@ int is_game_over(GameBoard *board);
 
 void print_board(GameBoard *board);
 
+void print_boards(GameBoard *my_board, GameBoard *enemy_board);
