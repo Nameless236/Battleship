@@ -24,6 +24,7 @@
 typedef struct {
     GameBoard my_board;
     GameBoard enemy_board;
+    Fleet fleet;
     int ships_to_place;
     int board_ready;
 } ClientGameState;
@@ -248,41 +249,47 @@ void *handle_commands(void *arg) {
     char buffer[BUFFER_SIZE];
     // Print the current state of the player's board
 
-    while (game_state->ships_to_place > 0) {
+    initialize_fleet(&game_state->fleet);
+
+    int index = 0;
+    while (index < 5) {
         system("clear");
+        print_fleet(&game_state->fleet, 5 - index);
+
         printf("\nYour current board:\n");
         print_board(&game_state->my_board);
-        // Prompt the user to place a ship
-        printf("Ships remaining %d\n", game_state->ships_to_place);
-        printf("\nEnter ship placement (PLACE x y length orientation): ");
 
+        // Prompt the user to place a ship
+        printf("\nPlacing ship: %s (Size: %d)\n", game_state->fleet.ships[index].name, game_state->fleet.ships[index].size);
+
+        printf("Ships remaining %d\n", 5 - index);
+
+        printf("\nEnter ship placement (PLACE x y orientation): ");
         fgets(buffer, sizeof(buffer), stdin);
 
         // Parse and validate the input
+
         int x, y, length;
         char orientation;
-        if (sscanf(buffer, "PLACE %d %d %d %c", &x, &y, &length, &orientation) == 4) {
+        if (sscanf(buffer, "PLACE %d %d %c", &x, &y, &orientation) == 3) {
             // Attempt to place the ship locally on the client's board
-            int result = place_ship(&game_state->my_board, x, y, length, orientation);
+            int result = place_ship_from_fleet(&game_state->my_board, x, y, &game_state->fleet.ships[index], orientation);
             if (result == 1) {
                 printf("Ship placed successfully!\n");
-                game_state->ships_to_place--; // Decrement remaining ships to place
 
-                // Notify the server about the successful placement
-                snprintf(buffer, sizeof(buffer), "CLIENT_%d:PLACE %d %d %d %c",
-                         args->client_id, x, y, length, orientation);
+                index++;
             } else {
                 printf("Failed to place ship. Invalid position or overlap. Try again.\n");
+                sleep(2);
             }
         } else {
             printf("Invalid input. Please use the format: PLACE x y length orientation\n");
+            sleep(2);
         }
     }
 
     // Notify that all ships have been placed
     printf("\nAll ships placed! Notifying server...\n");
-    // snprintf(buffer, sizeof(buffer), "CLIENT_%d:BOARD_READY", args->client_id);
-    // send_message(args->write_fd, buffer);
 
     // Mark the board as ready
     game_state->board_ready = 1;
@@ -363,6 +370,21 @@ void *handle_updates(void *arg) {
                             args->game_state->enemy_board.grid[x][y] = 3; // Minutie
                         }
                     }
+                    print_boards(&args->game_state->my_board, &args->game_state->enemy_board);
+                } else if (strncmp(message, "OPPONENT_ATTACKED", 17) == 0) {
+                    int x, y;
+                    char result;
+
+                    if (sscanf(message + 18, "%c_%d_%d", &result, &x, &y) == 3) {
+                        if (result == 'H') {
+                            printf("You hit a ship at (%d, %d)!\n", x, y);
+                            args->game_state->my_board.grid[x][y] = 2; // Zásah)
+                        } else if (result == 'M') {
+                            printf("You missed at (%d, %d).\n", x, y);
+                            args->game_state->my_board.grid[x][y] = 3; // Minutie
+                        }
+                    }
+                    printf("Opponent attacked at (%d, %d).\n", x, y);
                     print_boards(&args->game_state->my_board, &args->game_state->enemy_board);
                 } else if (strncmp(message, "OPPONENT_QUIT", 13) == 0) {
                     printf("Your opponent has quit the game. You win!\n");

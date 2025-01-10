@@ -177,4 +177,28 @@ void print_boards(GameBoard *my_board, GameBoard *enemy_board) {
     }
 }
 
+void initialize_fleet(Fleet *fleet) {
+    fleet->ships[0] = (Ship){1, "Carrier", 5};
+    fleet->ships[1] = (Ship){2, "Battleship", 4};
+    fleet->ships[2] = (Ship){3, "Destroyer", 3};
+    fleet->ships[3] = (Ship){4, "Submarine", 3};
+    fleet->ships[4] = (Ship){5, "Patrol Boat", 2};
+}
+
+int place_ship_from_fleet(GameBoard *board, int x, int y, Ship *ship, char orientation) {
+    return place_ship(board, x, y, ship->size, orientation);
+}
+
+void print_fleet(Fleet *fleet, int remaining_ships) {
+    printf("\nRemaining Fleet:\n");
+    printf("------------------------\n");
+    printf(" %-11s | %-4s\n", "Name", "Size");
+    printf("------------------------\n");
+    for (int i = 5 - remaining_ships; i < 5; i++) {
+        Ship *ship = &fleet->ships[i];
+        printf(" %-11s | %-4d\n", ship->name, ship->size);
+    }
+    printf("------------------------\n");
+}
+
 
