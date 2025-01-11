@@ -22,6 +22,7 @@ typedef struct {
     ClientGameState *game_state;
     sem_t *sem_command;  // For sending commands
     sem_t *sem_response; // For reading responses
+    sem_t *sem_continue; // For reading responses
 } ThreadArgs;
 
 void handle_game_over(const char *message);
