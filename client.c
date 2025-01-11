@@ -67,6 +67,10 @@ int run_client(int argc, char *argv[]) {
     snprintf(client_read_fifo, sizeof(client_read_fifo), CLIENT_READ_FIFO_TEMPLATE, server_name, args.client_id);
     snprintf(sem_response_name, sizeof(sem_response_name), SEM_RESPONSE_TEMPLATE, server_name, args.client_id);
 
+    char sem_continue_name[BUFFER_SIZE];
+    snprintf(sem_continue_name, sizeof(sem_continue_name), SEM_CONTINUE_TEMPLATE, server_name, args.client_id);
+
+    args.sem_continue = sem_open(sem_continue_name, O_RDWR);
     int read_fd_client = pipe_open_read(client_read_fifo);
     if (read_fd_client == -1) {
         perror("Failed to open pipes");
@@ -94,17 +98,17 @@ void initialize_client_game_state(ClientGameState *state) {
 
 void create_server_process(const char *server_name) {
     pid_t pid = fork();
-    if (pid == 0) { 
+    if (pid == 0) {
         run_server(server_name); // Child process: Start the server
-        
+
         wait(NULL);
 
-        exit(EXIT_SUCCESS); 
-    } else if (pid > 0) { 
-        printf("Server process created with PID: %d\n", pid); 
-    } else { 
-        perror("Failed to create server process"); 
-        exit(EXIT_FAILURE); 
+        exit(EXIT_SUCCESS);
+    } else if (pid > 0) {
+        printf("Server process created with PID: %d\n", pid);
+    } else {
+        perror("Failed to create server process");
+        exit(EXIT_FAILURE);
     }
 }
 
@@ -118,7 +122,7 @@ void setup_communication(const char *server_name, ThreadArgs *args) {
     snprintf(server_write_fifo, sizeof(server_write_fifo), SERVER_WRITE_FIFO_TEMPLATE, server_name);
 
 
-    
+
     // Check if FIFOs exist; if not, create a new server process
     if (access(server_read_fifo, F_OK) == -1 || access(server_write_fifo, F_OK) == -1) {
         sem_unlink(sem_connect_name);
@@ -174,7 +178,7 @@ void cleanup_resources(ThreadArgs *args) {
     if (args->sem_command != NULL && sem_close(args->sem_command) == -1) {
         perror("Failed to close command semaphore");
     }
-    
+
     if (args->sem_response != NULL && sem_close(args->sem_response) == -1) {
         perror("Failed to close response semaphore");
     }
@@ -201,9 +205,9 @@ void connect_to_server(ThreadArgs *args) {
         } else if (strncmp(buffer, "REJECT", 6) == 0) {
             printf("Connection rejected by the server. The game is full.\n");
             cleanup_resources(args); // Cleanup before exiting
-            exit(EXIT_SUCCESS); 
+            exit(EXIT_SUCCESS);
         }
-        
+
         usleep(100000); // Retry after delay
     }
 }
@@ -217,7 +221,7 @@ void handle_client_threads(ThreadArgs *args) {
 
     pthread_create(&command_thread, NULL, handle_commands, args);
     pthread_create(&update_thread, NULL, handle_updates, args);
-    
+
     pthread_join(command_thread, NULL);
     pthread_join(update_thread, NULL);
     printf("soooom\n");
@@ -304,7 +308,9 @@ void *handle_updates(void *arg) {
 
             // Set game_over flag if GAME_OVER or OPPONENT_QUIT is received
             if (strstr(buffer, "GAME_OVER") != NULL || strstr(buffer, "OPPONENT_QUIT") != NULL) {
+
                 atomic_store(&args->game_state->game_over, true); // Signal game over
+                sem_post(args->sem_continue);
                 write(quit_pipe[1], "Q", 1); // Write to the pipe to signal quit
                 printf("Game over or opponent quit detected. Exiting update thread.\n");
                 pthread_exit(NULL); // Exit this thread
@@ -342,6 +348,7 @@ void process_server_message(ThreadArgs *args, const char *buffer) {
                     args->game_state->enemy_board.grid[y][x] = 3; // Mark miss
                 }
             }
+            sem_post(args->sem_continue);
             print_boards(&args->game_state->my_board, &args->game_state->enemy_board);
         } else if (strncmp(message, "OPPONENT_ATTACKED", 17) == 0) {
             int x, y;
@@ -356,6 +363,7 @@ void process_server_message(ThreadArgs *args, const char *buffer) {
                     args->game_state->my_board.grid[y][x] = 3; // Minutie
                 }
             }
+            sem_post(args->sem_continue);
             printf("Opponent attacked at (%d, %d).\n", x, y);
             print_boards(&args->game_state->my_board, &args->game_state->enemy_board);
         } else if (strncmp(message, "OPPONENT_QUIT", 13) == 0) {

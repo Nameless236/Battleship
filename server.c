@@ -45,11 +45,15 @@ void initialize_server(const char *server_name) {
     // Generate unique semaphore names
     char sem_connect_name[BUFFER_SIZE], sem_command_name[BUFFER_SIZE];
     char sem_response_client0_name[BUFFER_SIZE], sem_response_client1_name[BUFFER_SIZE];
+    char sem_continue1_name[BUFFER_SIZE], sem_continue2_name[BUFFER_SIZE];
 
     snprintf(sem_connect_name, sizeof(sem_connect_name), SEM_CONNECT_TEMPLATE, server_name);
     snprintf(sem_command_name, sizeof(sem_command_name), SEM_COMMAND_TEMPLATE, server_name);
     snprintf(sem_response_client0_name, sizeof(sem_response_client0_name), SEM_RESPONSE_TEMPLATE, server_name, 0);
     snprintf(sem_response_client1_name, sizeof(sem_response_client1_name), SEM_RESPONSE_TEMPLATE, server_name, 1);
+
+    snprintf(sem_continue1_name, sizeof(sem_continue1_name), SEM_CONTINUE_TEMPLATE, server_name, 0);
+    snprintf(sem_continue2_name, sizeof(sem_continue2_name), SEM_CONTINUE_TEMPLATE, server_name, 1);
 
     mode_t old_umask = umask(0);
     // Initialize semaphores
@@ -62,6 +66,12 @@ void initialize_server(const char *server_name) {
 
     sem_t *sem_command;
     initialize_semaphore(sem_command_name, &sem_command, 0);
+
+    sem_t *sem_continue1;
+    initialize_semaphore(sem_continue1_name, &sem_continue1, 0);
+
+    sem_t *sem_continue2;
+    initialize_semaphore(sem_continue2_name, &sem_continue2, 0);
 
     sem_t *sem_response_client0;
     initialize_semaphore(sem_response_client0_name, &sem_response_client0, 0);
@@ -108,15 +118,23 @@ void cleanup_server(const char *server_name) {
     // Unlink semaphores
     char sem_connect_name[BUFFER_SIZE], sem_command_name[BUFFER_SIZE];
     char sem_response_client0_name[BUFFER_SIZE], sem_response_client1_name[BUFFER_SIZE];
+    char sem_continue1_name[BUFFER_SIZE], sem_continue2_name[BUFFER_SIZE];
+
     snprintf(sem_connect_name, sizeof(sem_connect_name), SEM_CONNECT_TEMPLATE, server_name);
     snprintf(sem_command_name, sizeof(sem_command_name), SEM_COMMAND_TEMPLATE, server_name);
     snprintf(sem_response_client0_name, sizeof(sem_response_client0_name), SEM_RESPONSE_TEMPLATE, server_name, 0);
     snprintf(sem_response_client1_name, sizeof(sem_response_client1_name), SEM_RESPONSE_TEMPLATE, server_name, 1);
+    snprintf(sem_continue1_name, sizeof(sem_continue1_name), SEM_CONTINUE_TEMPLATE, server_name, 0);
+    snprintf(sem_continue2_name, sizeof(sem_continue2_name), SEM_CONTINUE_TEMPLATE, server_name, 1);
 
     sem_unlink(sem_connect_name);
     sem_unlink(sem_command_name);
     sem_unlink(sem_response_client0_name);
     sem_unlink(sem_response_client1_name);
+
+    sem_unlink(sem_continue1_name);
+    sem_unlink(sem_continue2_name);
+
 
     // Destroy mutex
     pthread_mutex_destroy(&game_mutex);
@@ -140,24 +158,24 @@ void send_message_to_client(int client_id, const char *server_name, const char *
     int write_fd_c = pipe_open_write(client_write_fifo);
     if (write_fd_s != -1 && strncmp(message, "CLIENT_ID:", 10) == 0) {
         // For connection messages (CLIENT_ID), send without prefix
-       
+
             send_message(write_fd_s, message);
             printf("Server sent connection message: %s\n", message);
-    
+
         pipe_close(write_fd_s);
-        
+
     }
     else if (write_fd_c != -1) {
             // For all other messages, add the client prefix
             char prefixed_message[BUFFER_SIZE];
             snprintf(prefixed_message, sizeof(prefixed_message), "CLIENT_%d:%s", client_id, message);
-            
+
             send_message(write_fd_c, prefixed_message);
             sem_post(sem_response);
-            
+
             printf("Server sent prefixed message: %s\n", prefixed_message);
             pipe_close(write_fd_c);
-        
+
     }
 
     sem_close(sem_response);
@@ -165,6 +183,13 @@ void send_message_to_client(int client_id, const char *server_name, const char *
 
 void handle_client_message(int client_id, const char *message, const char *server_name, GameData *game_data) {
     printf("Handling message from client %d: %s\n", client_id, message);
+
+    char sem_continue1_name[BUFFER_SIZE], sem_continue2_name[BUFFER_SIZE];
+    snprintf(sem_continue1_name, sizeof(sem_continue1_name), SEM_CONTINUE_TEMPLATE, server_name, 0);
+    snprintf(sem_continue2_name, sizeof(sem_continue2_name), SEM_CONTINUE_TEMPLATE, server_name, 1);
+
+    sem_t * sem_continue1 = sem_open(sem_continue1_name, O_RDWR);
+    sem_t *sem_continue2 = sem_open(sem_continue2_name, O_RDWR);
 
     if (strncmp(message, "SEND_BOARD", 10) == 0) {
         char *encoded_board = message + 11;// Skip "SEND_BOARD "
@@ -195,15 +220,20 @@ void handle_client_message(int client_id, const char *message, const char *serve
             char response[BUFFER_SIZE];
             snprintf(response, sizeof(response), "ATTACK_RESULT_%c_%d_%d", (result == 1 || result == 2) ? 'H' : 'M', x, y);
             send_message_to_client(client_id, server_name, response);
+            sem_wait(client_id == 0 ? sem_continue1 : sem_continue2);
 
             // Notify opponent of attack
             snprintf(response, sizeof(response), "OPPONENT_ATTACKED_%c_%d_%d", (result == 1 || result == 2 ) ? 'H' : 'M', x, y);
             send_message_to_client(opponent_id, server_name, response);
+            sem_wait(client_id == 0 ? sem_continue2 : sem_continue1);
 
             // Check for game over condition
             if (result == 2) { // All ships sunk
+                printf("SERVER SUNK\n");
                 send_message_to_client(client_id, server_name, "GAME_OVER_W"); // Attacking player wins
+                sem_wait(client_id == 0 ? sem_continue1 : sem_continue2);
                 send_message_to_client(opponent_id, server_name, "GAME_OVER_L"); // Opponent loses
+                sem_wait(client_id == 0 ? sem_continue2 : sem_continue1);
 
                 cleanup_server(server_name);
                 exit(EXIT_SUCCESS);
