@@ -13,7 +13,7 @@ void initialize_board(GameBoard *board) {
     board->ships_remaining = 0;
 }
 
-int place_ship(GameBoard *board, int x, int y, int length, char orientation) {
+int place_ship_c(GameBoard *board, int x, int y, int length, char orientation) {
     // Validate coordinates and ship length
     if (x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE || length < 2 || length > 5) {
         return 0; // Invalid input
@@ -77,24 +77,33 @@ int place_ship(GameBoard *board, int x, int y, int length, char orientation) {
 }
 
 int attack(GameBoard *board, int x, int y) {
-    if (x < 0 || x >= 10 || y < 0 || y >= 10) {
-        return -1; // Neplatná pozícia
+    // Check if the coordinates are within bounds
+    if (x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE) {
+        printf("Invalid coordinates (%d, %d). Out of bounds.\n", x, y);
+        return -1; // Invalid attack
     }
 
-    if (board->grid[y][x] == 1) {
-        board->grid[y][x] = 2; // Zásah
-        int res = is_game_over(board);
-        if (res == 1) {
-            return 2;
+    // Check if the cell has already been attacked
+    if (board->grid[y][x] == 2 || board->grid[y][x] == 3) {
+        printf("Cell (%d, %d) has already been attacked.\n", x, y);
+        return -1; // Already attacked
+    }
+
+    // Determine if it's a hit or miss
+    if (board->grid[y][x] == 1) { // 1 indicates a ship is present
+        board->grid[y][x] = 2;    // Mark as hit
+        printf("Hit at (%d, %d)!\n", x, y);
+        if (is_game_over(board)) {
+            return 2; // Game over
         }
-        return 1;
-    } else if (board->grid[y][x] == 0) {
-        board->grid[y][x] = 3; // Minutie
-        return 0;
-    } else {
-        return -2; // Už tam bolo zasiahnuté
+        return 1; // Hit
+    } else { // Empty cell
+        board->grid[y][x] = 3; // Mark as miss
+        printf("Miss at (%d, %d).\n", x, y);
+        return 0; // Miss
     }
 }
+
 
 int is_game_over(GameBoard *board) {
     for (int i = 0; i < 10; i++) {
@@ -190,7 +199,7 @@ void initialize_fleet(Fleet *fleet) {
 }
 
 int place_ship_from_fleet(GameBoard *board, int x, int y, Ship *ship, char orientation) {
-    return place_ship(board, x, y, ship->size, orientation);
+    return place_ship_c(board, x, y, ship->size, orientation);
 }
 
 void print_fleet(Fleet *fleet, int remaining_ships) {

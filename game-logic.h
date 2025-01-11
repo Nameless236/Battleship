@@ -30,7 +30,7 @@ void initialize_fleet(Fleet *fleet);
 void initialize_board(GameBoard *board);
 
 // Umiestni loď na mriežku
-int place_ship(GameBoard *board, int x, int y, int length, char orientation);
+int place_ship_c(GameBoard *board, int x, int y, int length, char orientation);
 
 // Simuluje útok na konkrétnu pozíciu
 int attack(GameBoard *board, int x, int y);
