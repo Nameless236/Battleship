@@ -9,10 +9,12 @@
 #define SEM_CONNECT_TEMPLATE "/sem_connect_%s"
 #define SEM_COMMAND_TEMPLATE "/sem_command_%s"
 #define SEM_RESPONSE_TEMPLATE "/sem_response_%s_%d"
-#define SEM_BOARD_TEMPLATE "/sem_board_%s"
 
 // FIFO templates
 #define SERVER_READ_FIFO_TEMPLATE "/tmp/%s_server_read"
 #define SERVER_WRITE_FIFO_TEMPLATE "/tmp/%s_server_write"
+
+#define CLIENT_READ_FIFO_TEMPLATE "/tmp/%s_client_read_%d"
+#define CLIENT_WRITE_FIFO_TEMPLATE "/tmp/%s_client_write_%d"
 
 #endif

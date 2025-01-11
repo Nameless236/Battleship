@@ -81,11 +81,15 @@ int attack(GameBoard *board, int x, int y) {
         return -1; // Neplatná pozícia
     }
 
-    if (board->grid[x][y] == 1) {
-        board->grid[x][y] = 2; // Zásah
+    if (board->grid[y][x] == 1) {
+        board->grid[y][x] = 2; // Zásah
+        int res = is_game_over(board);
+        if (res == 1) {
+            return 2;
+        }
         return 1;
-    } else if (board->grid[x][y] == 0) {
-        board->grid[x][y] = 3; // Minutie
+    } else if (board->grid[y][x] == 0) {
+        board->grid[y][x] = 3; // Minutie
         return 0;
     } else {
         return -2; // Už tam bolo zasiahnuté

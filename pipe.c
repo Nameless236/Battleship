@@ -6,6 +6,13 @@
 #include <errno.h>
 #include <sys/stat.h>
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>    // For O_CREAT and O_EXCL
+#include <semaphore.h>
+#include <sys/stat.h> // For mode constants
+#include <errno.h>
+
 
 void pipe_init(const char *path) {
   if (access(path, F_OK) == 0) { // Kontrola existencie FIFO
@@ -16,10 +23,18 @@ void pipe_init(const char *path) {
   }
 
 
- if (mkfifo(path, 0666) == -1) {
+ // Temporarily set umask to 0
+    mode_t old_umask = umask(0);
+
+    // Create the FIFO with full read/write permissions for everyone
+    if (mkfifo(path,  0666) == -1) {
         perror("Failed to create named pipe");
         exit(EXIT_FAILURE);
     }
+
+    // Restore the original umask
+    umask(old_umask);
+
 
 }
 
