@@ -91,7 +91,7 @@ void initialize_client_game_state(ClientGameState *state) {
     initialize_board(&state->my_board);
     initialize_board(&state->enemy_board);
     initialize_fleet(&state->fleet);
-    state->ships_to_place = 2;  // Set initial number of ships
+    state->ships_to_place = 1;  // Set initial number of ships
     atomic_init(&state->game_over, false);
     state->board_ready = 0;
 }
@@ -220,9 +220,12 @@ void handle_client_threads(ThreadArgs *args) {
     }
 
     pthread_create(&command_thread, NULL, handle_commands, args);
+
     pthread_create(&update_thread, NULL, handle_updates, args);
 
+    printf("cccccc\n");
     pthread_join(command_thread, NULL);
+    printf("cccccc2\n");
     pthread_join(update_thread, NULL);
     printf("soooom\n");
 }
@@ -239,9 +242,22 @@ void *handle_commands(void *arg) {
         pthread_exit(NULL);
     }
 
-    place_ships(args->game_state, args); // Handles ship placement
+    int res = place_ships(args->game_state, args); // Handles ship placement
 
     char buffer[BUFFER_SIZE];
+
+
+    if(!res) {
+        snprintf(buffer, sizeof(buffer), "CLIENT_%d:QUIT", args->client_id);
+        send_message(args->write_fd, buffer);
+        sem_post(args->sem_command); // Notify server of quit command
+        printf("Quitting the game...\n");
+        atomic_store(&args->game_state->game_over, true); // Signal game over
+        return NULL;
+    }
+    printf("comam\n");
+
+
 
     while (!atomic_load(&args->game_state->game_over)) { // Check game_over flag
         printf("\nEnter command (ATTACK x y / QUIT): ");
@@ -307,19 +323,19 @@ void *handle_updates(void *arg) {
             process_server_message(args, buffer); // Handle different message types
 
             // Set game_over flag if GAME_OVER or OPPONENT_QUIT is received
-            if (strstr(buffer, "GAME_OVER") != NULL || strstr(buffer, "OPPONENT_QUIT") != NULL) {
+            if (strstr(buffer, "GAME_OVER") != NULL || strstr(buffer, "OPPONENT_QUIT") != NULL || strstr(buffer, "MY_QUIT") != NULL) {
 
                 atomic_store(&args->game_state->game_over, true); // Signal game over
                 sem_post(args->sem_continue);
                 write(quit_pipe[1], "Q", 1); // Write to the pipe to signal quit
                 printf("Game over or opponent quit detected. Exiting update thread.\n");
-                pthread_exit(NULL); // Exit this thread
+                break;
             }
         } else {
             perror("Failed to receive message from server");
         }
     }
-
+    printf("1h21\n");
     return NULL;
 }
 
@@ -372,7 +388,6 @@ void process_server_message(ThreadArgs *args, const char *buffer) {
             printf("Opponent quit detected.\n");
         } else if (strncmp(message, "MY_QUIT", 6) == 0) {
             printf("I have quit the game. I lose!\n");
-
             atomic_store(&args->game_state->game_over, true); // Signal game over
             write(quit_pipe[1], "Q", 1); // Write to the pipe to signal quit
             printf("My quit detected.\n");
@@ -389,13 +404,14 @@ void process_server_message(ThreadArgs *args, const char *buffer) {
 }
 
 
-void place_ships(ClientGameState *game_state, ThreadArgs *args) {
+bool place_ships(ClientGameState *game_state, ThreadArgs *args) {
     char buffer[BUFFER_SIZE];
     int index = 0;
 
     initialize_fleet(&game_state->fleet);
 
-    while (index < 1) {
+
+    while (!atomic_load(&args->game_state->game_over) && index < 1) { // Check game_over flag
         system("clear");
         print_fleet(&game_state->fleet, game_state->ships_to_place - index);
         printf("\nYour current board:\n");
@@ -404,26 +420,66 @@ void place_ships(ClientGameState *game_state, ThreadArgs *args) {
         printf("\nPlacing ship: %s (Size: %d)\n", game_state->fleet.ships[index].name, game_state->fleet.ships[index].size);
         printf("Ships remaining: %d\n", game_state->ships_to_place - index);
         printf("\nEnter ship placement (PLACE x y orientation): ");
-        fgets(buffer, sizeof(buffer), stdin);
 
-        int x, y;
-        char orientation;
-        if (sscanf(buffer, "PLACE %d %d %c", &x, &y, &orientation) == 3) {
-            if (place_ship_from_fleet(&game_state->my_board, x, y, &game_state->fleet.ships[4], orientation)) {
-                printf("Ship placed successfully!\n");
-                index++;
-            } else {
-                printf("Failed to place ship. Invalid position or overlap. Try again.\n");
+        // Set up file descriptor set for select
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(STDIN_FILENO, &read_fds); // Monitor stdin (file descriptor 0)
+        FD_SET(quit_pipe[0], &read_fds); // Monitor quit_pipe read end
+
+        int max_fd = quit_pipe[0] > STDIN_FILENO ? quit_pipe[0] : STDIN_FILENO;
+
+        int result = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
+        if (result > 0) {
+            if (FD_ISSET(quit_pipe[0], &read_fds)) {
+                printf("Quit signal received. Exiting command thread.\n");
+                break; // Exit thread on quit signal
             }
-        } else {
-            printf("Invalid input. Please use the format: PLACE x y orientation\n");
-            sleep(2);
+
+            if (FD_ISSET(STDIN_FILENO, &read_fds)) {
+                system("clear");
+                    print_fleet(&game_state->fleet, game_state->ships_to_place - index);
+                    printf("\nYour current board:\n");
+                    print_board(&game_state->my_board);
+
+                    printf("\nPlacing ship: %s (Size: %d)\n", game_state->fleet.ships[index].name, game_state->fleet.ships[index].size);
+                    printf("Ships remaining: %d\n", game_state->ships_to_place - index);
+                    printf("\nEnter ship placement (PLACE x y orientation): ");
+                if (fgets(buffer, sizeof(buffer), stdin) != NULL) {
+
+
+                    int x, y;
+                    char orientation;
+                    if (sscanf(buffer, "PLACE %d %d %c", &x, &y, &orientation) == 3) {
+                        if (place_ship_from_fleet(&game_state->my_board, x, y, &game_state->fleet.ships[4], orientation)) {
+                            printf("Ship placed successfully!\n");
+                            index++;
+                        } else {
+                            printf("Failed to place ship. Invalid position or overlap. Try again.\n");
+                        }
+                    } else if (strncmp(buffer, "QUIT", 4) == 0) {
+                        snprintf(buffer, sizeof(buffer), "CLIENT_%d:QUIT", args->client_id);
+                        send_message(args->write_fd, buffer);
+                        sem_post(args->sem_command); // Notify server of quit command
+                        printf("Quitting the game...\n");
+                        atomic_store(&args->game_state->game_over, true); // Signal game over
+                        return false;;
+                    } else {
+                        printf("Invalid input. Please use the format: PLACE x y orientation\n");
+                        sleep(2);
+                    }
+                }
+            }
+        } else if (result < 0) {
+            perror("Error in select");
+            return false;
         }
     }
 
     // Notify server that all ships are placed
     send_board_to_server(args->write_fd, args->client_id, &game_state->my_board);
     sem_post(args->sem_command);
+    return true;
 }
 
 void handle_gameplay_commands(ThreadArgs *args) {
