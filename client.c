@@ -81,6 +81,7 @@ int run_client(int argc, char *argv[]) {
         perror("Failed to open pipes");
         exit(EXIT_FAILURE);
     }
+    
     args.read_fd = read_fd_client;
     args.sem_response = sem_open(sem_response_name, O_RDWR);
 
@@ -88,7 +89,7 @@ int run_client(int argc, char *argv[]) {
 
     // Cleanup resources after threads finish
     cleanup_resources(&args);
-
+    server_name = NULL;
     return 0;
 }
 
@@ -105,9 +106,6 @@ void create_server_process(const char *server_name) {
     pid_t pid = fork();
     if (pid == 0) {
         run_server(server_name); // Child process: Start the server
-
-        wait(NULL);
-
         exit(EXIT_SUCCESS);
     } else if (pid > 0) {
         printf("Server process created with PID: %d\n", pid);
@@ -147,19 +145,11 @@ void setup_communication(const char *server_name, ThreadArgs *args) {
 
     printf("Server is ready. Connecting...\n");
 
-    args->sem_command = sem_open(sem_command_name, O_CREAT | O_EXCL, 0666, 0);
+    args->sem_command = sem_open(sem_command_name, O_RDWR, 0666, 0);
     if (args->sem_command == SEM_FAILED) {
-        if (errno == EEXIST) {
-            // Semaphore already exists; open it without O_CREAT
-            args->sem_command = sem_open(sem_command_name, 0);
-            if (args->sem_command == SEM_FAILED) {
-                perror("Failed to open existing command semaphore");
-                exit(EXIT_FAILURE);
-            }
-        } else {
             perror("Failed to open command semaphore");
             exit(EXIT_FAILURE);
-        }
+        
     }
 
     args->write_fd = pipe_open_write(server_read_fifo);
@@ -180,19 +170,34 @@ void setup_communication(const char *server_name, ThreadArgs *args) {
 }
 
 void cleanup_resources(ThreadArgs *args) {
-    if (args->sem_command != NULL && sem_close(args->sem_command) == -1) {
-        perror("Failed to close command semaphore");
+    if (args->sem_command != NULL) {
+        if (sem_close(args->sem_command) == -1) {
+            perror("Failed to close command semaphore");
+        }
+        args->sem_command = NULL;
     }
 
-    if (args->sem_response != NULL && sem_close(args->sem_response) == -1) {
-        perror("Failed to close response semaphore");
+    if (args->sem_response != NULL) {
+        if (sem_close(args->sem_response) == -1) {
+            perror("Failed to close response semaphore");
+        }
+        args->sem_response = NULL;
+    }
+
+    if (args->sem_continue != NULL) {
+        if (sem_close(args->sem_continue) == -1) {
+            perror("Failed to close continue semaphore");
+        }
+        args->sem_continue = NULL;
     }
 
     free(args->game_state);
+    args->game_state = NULL;
 
     pipe_close(args->write_fd);
     pipe_close(args->read_fd);
 }
+
 
 void connect_to_server(ThreadArgs *args) {
     send_message(args->write_fd, "CONNECT");
@@ -203,6 +208,7 @@ void connect_to_server(ThreadArgs *args) {
     while (1) {
         if (receive_message(args->read_fd, buffer, BUFFER_SIZE) == 0 && strncmp(buffer, "CLIENT_ID:", 10) == 0) {
             sscanf(buffer + 10, "%d", &args->client_id);
+            pipe_close(args->read_fd);
             printf("Successfully connected with ID: %d\n", args->client_id);
             if (args->client_id == 0) {
                 args->game_state->my_turn = true;

@@ -22,6 +22,5 @@ void run_server(const char *server_name);
 void handle_client_message(int client_id, const char *message, const char *server_name, GameData *game_data);
 void send_message_to_client(int client_id, const char *server_name, const char *message) ;
 void handle_board_message(int client_id, const char *message, GameData *game_data);
-void initialize_game(GameData *game_data);
 
 #endif

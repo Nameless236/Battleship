@@ -15,16 +15,6 @@
 static pthread_mutex_t game_mutex = PTHREAD_MUTEX_INITIALIZER;
 static GameData game_data = {0};
 
-void initialize_game(GameData *game_data) {
-    pthread_mutex_lock(&game_mutex);
-    initialize_board(&game_data->board_players[0]);
-    initialize_board(&game_data->board_players[1]);
-    game_data->client_id_1 = -1;
-    game_data->client_id_2 = -1;
-    game_data->player_turn = 0; // Player 0 starts the game
-    pthread_mutex_unlock(&game_mutex);
-}
-
 void initialize_semaphore(const char *sem_name, sem_t **sem, int initial_value) {
     sem_unlink(sem_name);
     *sem = sem_open(sem_name, O_CREAT | O_EXCL, 0666, initial_value);
@@ -32,6 +22,8 @@ void initialize_semaphore(const char *sem_name, sem_t **sem, int initial_value) 
         perror("Failed to create semaphore");
         exit(EXIT_FAILURE);
     }
+    sem_close(*sem);
+
 }
 
 void initialize_fifo(const char *fifo_name) {
@@ -103,6 +95,13 @@ void initialize_server(const char *server_name) {
 }
 
 void cleanup_server(const char *server_name) {
+    char client_write_fifo[BUFFER_SIZE];
+    snprintf(client_write_fifo, sizeof(client_write_fifo), CLIENT_READ_FIFO_TEMPLATE, server_name, 0);
+    unlink(client_write_fifo);
+
+    snprintf(client_write_fifo, sizeof(client_write_fifo), CLIENT_READ_FIFO_TEMPLATE, server_name, 1);
+    unlink(client_write_fifo);
+
     // Generate FIFO paths
     char server_read_fifo[BUFFER_SIZE];
     char server_write_fifo[BUFFER_SIZE];
@@ -132,8 +131,7 @@ void cleanup_server(const char *server_name) {
 
     sem_unlink(sem_continue1_name);
     sem_unlink(sem_continue2_name);
-
-
+    
     // Destroy mutex
     pthread_mutex_destroy(&game_mutex);
 }
@@ -154,8 +152,6 @@ void send_message_to_client(int client_id, const char *server_name, const char *
     int write_fd_c = pipe_open_write(client_write_fifo);
     if (write_fd_s != -1 && strncmp(message, "CLIENT_ID:", 10) == 0) {
         send_message(write_fd_s, message);
-        pipe_close(write_fd_s);
-
     }
     else if (write_fd_c != -1) {
             // For all other messages, add the client prefix
@@ -164,10 +160,9 @@ void send_message_to_client(int client_id, const char *server_name, const char *
 
             send_message(write_fd_c, prefixed_message);
             sem_post(sem_response);
-
-            pipe_close(write_fd_c);
-
     }
+    pipe_close(write_fd_s);
+    pipe_close(write_fd_c);
 
     sem_close(sem_response);
 }
@@ -181,7 +176,6 @@ void handle_client_message(int client_id, const char *message, const char *serve
     sem_t *sem_continue2 = sem_open(sem_continue2_name, O_RDWR);
 
     if (strncmp(message, "SEND_BOARD", 10) == 0) {
-        char *encoded_board = message + 11;
         GameBoard *board = &game_data->board_players[client_id];
 
         // Decode the board: Replace 'A' with 0 and 'B' with 1
@@ -222,6 +216,8 @@ void handle_client_message(int client_id, const char *message, const char *serve
                 send_message_to_client(opponent_id, server_name, "GAME_OVER_L"); // Opponent loses
                 sem_wait(client_id == 0 ? sem_continue2 : sem_continue1);
 
+                sem_close(sem_continue1);
+                sem_close(sem_continue2);
                 cleanup_server(server_name);
                 exit(EXIT_SUCCESS);
             }
@@ -236,10 +232,14 @@ void handle_client_message(int client_id, const char *message, const char *serve
 
         send_message_to_client(opponent_id, server_name, "OPPONENT_QUIT");
         send_message_to_client(client_id, server_name, "MY_QUIT");
+        sem_close(sem_continue1);
+        sem_close(sem_continue2);
 
         cleanup_server(server_name);
         exit(EXIT_SUCCESS);
     }
+    sem_close(sem_continue1);
+    sem_close(sem_continue2);
 }
 
 void run_server(const char *server_name) {
@@ -296,12 +296,19 @@ void run_server(const char *server_name) {
                     int write_fd = pipe_open_write(server_write_fifo);
                     char response[BUFFER_SIZE];
                     snprintf(response, sizeof(response), "REJECT");
+                    sem_close(sem_command);
+                    pipe_close(write_fd);
+                    pipe_close(read_fd);
                     send_message(write_fd, response);
                 }
 
                 pthread_mutex_unlock(&game_mutex);
             } else if (sscanf(buffer, "CLIENT_%d:%s", &client_id, message) == 2) {
                 pthread_mutex_lock(&game_mutex);
+                if (strstr(message, "QUIT") != NULL) {
+                    pipe_close(read_fd);
+                    sem_close(sem_command);
+                }
                 handle_client_message(client_id, message, server_name, &game_data);
                 pthread_mutex_unlock(&game_mutex);
             }  
