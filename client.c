@@ -16,6 +16,14 @@
 
 int quit_pipe[2]; // Global pipe for signaling quit
 
+static void clear_screen() {
+#if defined(_WIN32) || defined(_WIN64)
+    system("cls");
+#else
+    system("clear");
+#endif
+}
+
 void initialize_quit_pipe() {
     if (pipe(quit_pipe) == -1) {
         perror("Failed to create quit pipe");
@@ -39,9 +47,6 @@ void send_board_to_server(int write_fd, int client_id, GameBoard *board) {
     // Send the serialized board to the server
     snprintf(buffer, sizeof(buffer), "CLIENT_%d:SEND_BOARD-%s", client_id, serialized_board);
     send_message(write_fd, buffer);
-
-    printf("Board sent to server:\n");
-    print_board(board); // Print the board for debugging
 }
 
 int run_client(int argc, char *argv[]) {
@@ -91,7 +96,7 @@ void initialize_client_game_state(ClientGameState *state) {
     initialize_board(&state->my_board);
     initialize_board(&state->enemy_board);
     initialize_fleet(&state->fleet);
-    state->ships_to_place = 1;  // Set initial number of ships
+    state->ships_to_place = 5;
     atomic_init(&state->game_over, false);
     state->board_ready = 0;
 }
@@ -187,8 +192,6 @@ void cleanup_resources(ThreadArgs *args) {
 
     pipe_close(args->write_fd);
     pipe_close(args->read_fd);
-
-    printf("Resources cleaned up successfully.\n");
 }
 
 void connect_to_server(ThreadArgs *args) {
@@ -201,6 +204,11 @@ void connect_to_server(ThreadArgs *args) {
         if (receive_message(args->read_fd, buffer, BUFFER_SIZE) == 0 && strncmp(buffer, "CLIENT_ID:", 10) == 0) {
             sscanf(buffer + 10, "%d", &args->client_id);
             printf("Successfully connected with ID: %d\n", args->client_id);
+            if (args->client_id == 0) {
+                args->game_state->my_turn = true;
+            } else {
+                args->game_state->my_turn = false;
+            }
             break;
         } else if (strncmp(buffer, "REJECT", 6) == 0) {
             printf("Connection rejected by the server. The game is full.\n");
@@ -220,18 +228,14 @@ void handle_client_threads(ThreadArgs *args) {
     }
 
     pthread_create(&command_thread, NULL, handle_commands, args);
-
     pthread_create(&update_thread, NULL, handle_updates, args);
-
-    printf("cccccc\n");
     pthread_join(command_thread, NULL);
-    printf("cccccc2\n");
     pthread_join(update_thread, NULL);
-    printf("soooom\n");
+
 }
 
 void signal_quit() {
-    write(quit_pipe[1], "Q", 1); // Write to the pipe to signal quit
+    write(quit_pipe[1], "Q", 1);
 }
 
 void *handle_commands(void *arg) {
@@ -250,19 +254,12 @@ void *handle_commands(void *arg) {
     if(!res) {
         snprintf(buffer, sizeof(buffer), "CLIENT_%d:QUIT", args->client_id);
         send_message(args->write_fd, buffer);
-        sem_post(args->sem_command); // Notify server of quit command
-        printf("Quitting the game...\n");
+        sem_post(args->sem_command);
         atomic_store(&args->game_state->game_over, true); // Signal game over
         return NULL;
     }
-    printf("comam\n");
 
-
-
-    while (!atomic_load(&args->game_state->game_over)) { // Check game_over flag
-        printf("\nEnter command (ATTACK x y / QUIT): ");
-
-        // Set up file descriptor set for select
+    while (!atomic_load(&args->game_state->game_over)) {
         fd_set read_fds;
         FD_ZERO(&read_fds);
         FD_SET(STDIN_FILENO, &read_fds); // Monitor stdin (file descriptor 0)
@@ -273,8 +270,7 @@ void *handle_commands(void *arg) {
         int result = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
         if (result > 0) {
             if (FD_ISSET(quit_pipe[0], &read_fds)) {
-                printf("Quit signal received. Exiting command thread.\n");
-                break; // Exit thread on quit signal
+                break;
             }
 
             if (FD_ISSET(STDIN_FILENO, &read_fds)) {
@@ -292,8 +288,7 @@ void *handle_commands(void *arg) {
                     } else if (strncmp(buffer, "QUIT", 4) == 0) {
                         snprintf(buffer, sizeof(buffer), "CLIENT_%d:QUIT", args->client_id);
                         send_message(args->write_fd, buffer);
-                        sem_post(args->sem_command); // Notify server of quit command
-                        printf("Quitting the game...\n");
+                        sem_post(args->sem_command);
                         atomic_store(&args->game_state->game_over, true); // Signal game over
                         break;
                     } else {
@@ -306,8 +301,6 @@ void *handle_commands(void *arg) {
             break;
         }
     }
-
-    printf("Exiting command thread.\n");
     return NULL;
 }
 
@@ -328,78 +321,107 @@ void *handle_updates(void *arg) {
                 atomic_store(&args->game_state->game_over, true); // Signal game over
                 sem_post(args->sem_continue);
                 write(quit_pipe[1], "Q", 1); // Write to the pipe to signal quit
-                printf("Game over or opponent quit detected. Exiting update thread.\n");
                 break;
             }
         } else {
             perror("Failed to receive message from server");
         }
     }
-    printf("1h21\n");
     return NULL;
 }
-
 
 void process_server_message(ThreadArgs *args, const char *buffer) {
     char expected_prefix[BUFFER_SIZE];
     snprintf(expected_prefix, sizeof(expected_prefix), "CLIENT_%d:", args->client_id);
 
-    if (strncmp(buffer, expected_prefix, strlen(expected_prefix)) == 0) {
-        const char *message = buffer + strlen(expected_prefix);
-        printf("Received message: %s\n", message);
+    if (strncmp(buffer, expected_prefix, strlen(expected_prefix)) != 0) {
+        return;
+    }
 
-        if (strncmp(message, "BOARD_RECEIVED", 13) == 0) {
-            print_boards(&args->game_state->my_board, &args->game_state->enemy_board);
-            printf("\nEnter ATTACK placement (ATTACK x y) or QUIT: ");
-        } else if (strncmp(message, "ATTACK_RESULT", 13) == 0) {
-            int x, y;
-            char result;
+    const char *message = buffer + strlen(expected_prefix);
 
-            if (sscanf(message + 14, "%c_%d_%d", &result, &x, &y) == 3) {
-                if (result == 'H') {
-                    printf("You hit a ship at (%d, %d)!\n", x, y);
-                    args->game_state->enemy_board.grid[y][x] = 2; // Mark hit
-                } else if (result == 'M') {
-                    printf("You missed at (%d, %d).\n", x, y);
-                    args->game_state->enemy_board.grid[y][x] = 3; // Mark miss
-                }
-            }
-            sem_post(args->sem_continue);
-            print_boards(&args->game_state->my_board, &args->game_state->enemy_board);
-        } else if (strncmp(message, "OPPONENT_ATTACKED", 17) == 0) {
-            int x, y;
-            char result;
-
-            if (sscanf(message + 18, "%c_%d_%d", &result, &x, &y) == 3) {
-                if (result == 'H') {
-                    printf("You hit a ship at (%d, %d)!\n", x, y);
-                    args->game_state->my_board.grid[y][x] = 2; // Zásah)
-                } else if (result == 'M') {
-                    printf("You missed at (%d, %d).\n", x, y);
-                    args->game_state->my_board.grid[y][x] = 3; // Minutie
-                }
-            }
-            sem_post(args->sem_continue);
-            printf("Opponent attacked at (%d, %d).\n", x, y);
-            print_boards(&args->game_state->my_board, &args->game_state->enemy_board);
-        } else if (strncmp(message, "OPPONENT_QUIT", 13) == 0) {
-            atomic_store(&args->game_state->game_over, true); // Signal game over
-            write(quit_pipe[1], "Q", 1); // Write to the pipe to signal quit
-            printf("Opponent quit detected.\n");
-        } else if (strncmp(message, "MY_QUIT", 6) == 0) {
-            printf("I have quit the game. I lose!\n");
-            atomic_store(&args->game_state->game_over, true); // Signal game over
-            write(quit_pipe[1], "Q", 1); // Write to the pipe to signal quit
-            printf("My quit detected.\n");
-        } else if (strncmp(message, "GAME_OVER", 9) == 0) {
-            atomic_store(&args->game_state->game_over, true); // Signal game over
-            write(quit_pipe[1], "Q", 1); // Write to the pipe to signal quit
-            printf("Game over or opponent quit detected.\n");
-        } else if (strncmp(message, "WRONG_TURN", 10) == 0) {
-            printf("IT'S YOUR OPPONENTS TURN.");
+    if (strncmp(message, "BOARD_RECEIVED", 13) == 0) {
+        clear_screen();
+        print_boards(&args->game_state->my_board, &args->game_state->enemy_board);
+        if (args->game_state->my_turn) {
+            printf("\nEnter command (ATTACK x y / QUIT): ");
+        } else {
+            printf("Waiting for opponent's move...\n");
         }
+        fflush(stdout);
+
+    } else if (strncmp(message, "ATTACK_RESULT", 13) == 0) {
+        clear_screen();
+        int x, y;
+        char result;
+        if (sscanf(message + 14, "%c_%d_%d", &result, &x, &y) == 3) {
+            if (result == 'H') {
+                printf("You hit a ship at (%d, %d)!\n", x, y);
+                args->game_state->enemy_board.grid[y][x] = 2;
+            } else {
+                printf("You missed at (%d, %d).\n", x, y);
+                args->game_state->enemy_board.grid[y][x] = 3;
+            }
+        }
+        args->game_state->my_turn = false;
+        sem_post(args->sem_continue);
+        print_boards(&args->game_state->my_board, &args->game_state->enemy_board);
+        if (args->game_state->my_turn) {
+            printf("\nEnter command (ATTACK x y / QUIT): ");
+        } else {
+            printf("Waiting for opponent's move...\n");
+        }
+        fflush(stdout);
+
+    } else if (strncmp(message, "OPPONENT_ATTACKED", 17) == 0) {
+        clear_screen();
+        int x, y;
+        char result;
+        if (sscanf(message + 18, "%c_%d_%d", &result, &x, &y) == 3) {
+            if (result == 'H') {
+                printf("You were hit at (%d, %d)!\n", x, y);
+                args->game_state->my_board.grid[y][x] = 2;
+            } else {
+                printf("Opponent missed you at (%d, %d).\n", x, y);
+                args->game_state->my_board.grid[y][x] = 3;
+            }
+        }
+        args->game_state->my_turn = true;
+        sem_post(args->sem_continue);
+        print_boards(&args->game_state->my_board, &args->game_state->enemy_board);
+        if (args->game_state->my_turn) {
+            printf("\nEnter command (ATTACK x y / QUIT): ");
+        } else {
+            printf("Waiting for opponent's move...\n");
+        }
+        fflush(stdout);
+
+    } else if (strncmp(message, "GAME_OVER_W", 11) == 0) {
+        printf("\nCongratulations! You WON the game!\n");
+        atomic_store(&args->game_state->game_over, true);
+        write(quit_pipe[1], "Q", 1);
+
+    } else if (strncmp(message, "GAME_OVER_L", 11) == 0) {
+        printf("\nSorry! You LOST the game!\n");
+        atomic_store(&args->game_state->game_over, true);
+        write(quit_pipe[1], "Q", 1);
+
+    } else if (strncmp(message, "OPPONENT_QUIT", 13) == 0) {
+        printf("\nOpponent quit the game.\n");
+        atomic_store(&args->game_state->game_over, true);
+        write(quit_pipe[1], "Q", 1);
+
+    } else if (strncmp(message, "MY_QUIT", 7) == 0) {
+        printf("\nYou quit the game.\n");
+        atomic_store(&args->game_state->game_over, true);
+        write(quit_pipe[1], "Q", 1);
+
+    } else if (strncmp(message, "WRONG_TURN", 10) == 0) {
+        printf("It's not your turn, please wait...\n");
+
     } else {
-        printf("Unexpected message format: %s\n", buffer);
+        // Ostatné správy ignorujeme alebo si ich môžete logovať
+        // printf("Unknown message: %s\n", message);
     }
 }
 
@@ -411,15 +433,21 @@ bool place_ships(ClientGameState *game_state, ThreadArgs *args) {
     initialize_fleet(&game_state->fleet);
 
 
-    while (!atomic_load(&args->game_state->game_over) && index < 1) { // Check game_over flag
-        system("clear");
+    while (!atomic_load(&args->game_state->game_over) && index < 5) { // Check game_over flag
+        clear_screen();
         print_fleet(&game_state->fleet, game_state->ships_to_place - index);
         printf("\nYour current board:\n");
         print_board(&game_state->my_board);
 
-        printf("\nPlacing ship: %s (Size: %d)\n", game_state->fleet.ships[index].name, game_state->fleet.ships[index].size);
+        printf("\nPlacing ship: %s (Size: %d)\n",
+               game_state->fleet.ships[index].name,
+               game_state->fleet.ships[index].size);
         printf("Ships remaining: %d\n", game_state->ships_to_place - index);
+
+        // >>> TU dáme PROMPT na zadanie súradníc
         printf("\nEnter ship placement (PLACE x y orientation): ");
+        fflush(stdout);  // aby sa prompt hneď "pretlačil" na terminál
+
 
         // Set up file descriptor set for select
         fd_set read_fds;
@@ -432,26 +460,16 @@ bool place_ships(ClientGameState *game_state, ThreadArgs *args) {
         int result = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
         if (result > 0) {
             if (FD_ISSET(quit_pipe[0], &read_fds)) {
-                printf("Quit signal received. Exiting command thread.\n");
                 break; // Exit thread on quit signal
             }
 
             if (FD_ISSET(STDIN_FILENO, &read_fds)) {
-                system("clear");
-                    print_fleet(&game_state->fleet, game_state->ships_to_place - index);
-                    printf("\nYour current board:\n");
-                    print_board(&game_state->my_board);
 
-                    printf("\nPlacing ship: %s (Size: %d)\n", game_state->fleet.ships[index].name, game_state->fleet.ships[index].size);
-                    printf("Ships remaining: %d\n", game_state->ships_to_place - index);
-                    printf("\nEnter ship placement (PLACE x y orientation): ");
                 if (fgets(buffer, sizeof(buffer), stdin) != NULL) {
-
-
                     int x, y;
                     char orientation;
                     if (sscanf(buffer, "PLACE %d %d %c", &x, &y, &orientation) == 3) {
-                        if (place_ship_from_fleet(&game_state->my_board, x, y, &game_state->fleet.ships[4], orientation)) {
+                        if (place_ship_from_fleet(&game_state->my_board, x, y, &game_state->fleet.ships[index], orientation)) {
                             printf("Ship placed successfully!\n");
                             index++;
                         } else {
@@ -460,8 +478,7 @@ bool place_ships(ClientGameState *game_state, ThreadArgs *args) {
                     } else if (strncmp(buffer, "QUIT", 4) == 0) {
                         snprintf(buffer, sizeof(buffer), "CLIENT_%d:QUIT", args->client_id);
                         send_message(args->write_fd, buffer);
-                        sem_post(args->sem_command); // Notify server of quit command
-                        printf("Quitting the game...\n");
+                        sem_post(args->sem_command);
                         atomic_store(&args->game_state->game_over, true); // Signal game over
                         return false;;
                     } else {
@@ -482,11 +499,12 @@ bool place_ships(ClientGameState *game_state, ThreadArgs *args) {
     return true;
 }
 
+
 void handle_gameplay_commands(ThreadArgs *args) {
     char buffer[BUFFER_SIZE];
 
     while (1) {
-        printf("\nEnter command (ATTACK x y / QUIT): ");
+        //printf("\nEnter command (ATTACK x y / QUIT): ");
         fgets(buffer, sizeof(buffer), stdin);
 
         if (strncmp(buffer, "ATTACK", 6) == 0) {
@@ -503,7 +521,6 @@ void handle_gameplay_commands(ThreadArgs *args) {
             snprintf(buffer, sizeof(buffer), "CLIENT_%d:QUIT", args->client_id);
             send_message(args->write_fd, buffer);
             sem_post(args->sem_command);
-            printf("Quitting the game...\n");
             return;
         } else {
             printf("Unknown command. Try again.\n");

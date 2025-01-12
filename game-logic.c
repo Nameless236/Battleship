@@ -1,5 +1,6 @@
 #include "game-logic.h"
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 
 #define BOARD_SIZE 10
@@ -191,11 +192,11 @@ void print_boards(GameBoard *my_board, GameBoard *enemy_board) {
 }
 
 void initialize_fleet(Fleet *fleet) {
-    fleet->ships[0] = (Ship){1, "Carrier", 5};
-    fleet->ships[1] = (Ship){2, "Battleship", 4};
-    fleet->ships[2] = (Ship){3, "Destroyer", 3};
-    fleet->ships[3] = (Ship){4, "Submarine", 3};
-    fleet->ships[4] = (Ship){5, "Patrol Boat", 2};
+    fleet->ships[0] = (Ship){1, "Carrier\0", 5};
+    fleet->ships[1] = (Ship){2, "Battleship\0", 4};
+    fleet->ships[2] = (Ship){3, "Destroyer\0", 3};
+    fleet->ships[3] = (Ship){4, "Submarine\0", 3};
+    fleet->ships[4] = (Ship){5, "Patrol Boat\0", 2};
 }
 
 int place_ship_from_fleet(GameBoard *board, int x, int y, Ship *ship, char orientation) {

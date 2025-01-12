@@ -13,6 +13,7 @@ typedef struct {
     int ships_to_place;
     atomic_bool game_over; // Atomic flag to signal game termination
     int board_ready;
+    bool my_turn;
 } ClientGameState;
 
 typedef struct {
@@ -49,6 +50,6 @@ void *handle_commands(void *arg);
 
 void handle_gameplay_commands(ThreadArgs *args);
 
-void place_ships(ClientGameState *game_state, ThreadArgs *args) ;
+bool place_ships(ClientGameState *game_state, ThreadArgs *args) ;
 
 void process_server_message(ThreadArgs *args, const char *message);

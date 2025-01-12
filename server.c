@@ -103,8 +103,6 @@ void initialize_server(const char *server_name) {
 }
 
 void cleanup_server(const char *server_name) {
-    printf("Cleaning up server resources...\n");
-
     // Generate FIFO paths
     char server_read_fifo[BUFFER_SIZE];
     char server_write_fifo[BUFFER_SIZE];
@@ -138,8 +136,6 @@ void cleanup_server(const char *server_name) {
 
     // Destroy mutex
     pthread_mutex_destroy(&game_mutex);
-
-    printf("Server resources cleaned up.\n");
 }
 
 void send_message_to_client(int client_id, const char *server_name, const char *message) {
@@ -157,11 +153,7 @@ void send_message_to_client(int client_id, const char *server_name, const char *
     int write_fd_s = pipe_open_write(server_write_fifo);
     int write_fd_c = pipe_open_write(client_write_fifo);
     if (write_fd_s != -1 && strncmp(message, "CLIENT_ID:", 10) == 0) {
-        // For connection messages (CLIENT_ID), send without prefix
-
-            send_message(write_fd_s, message);
-            printf("Server sent connection message: %s\n", message);
-
+        send_message(write_fd_s, message);
         pipe_close(write_fd_s);
 
     }
@@ -173,7 +165,6 @@ void send_message_to_client(int client_id, const char *server_name, const char *
             send_message(write_fd_c, prefixed_message);
             sem_post(sem_response);
 
-            printf("Server sent prefixed message: %s\n", prefixed_message);
             pipe_close(write_fd_c);
 
     }
@@ -182,8 +173,6 @@ void send_message_to_client(int client_id, const char *server_name, const char *
 }
 
 void handle_client_message(int client_id, const char *message, const char *server_name, GameData *game_data) {
-    printf("Handling message from client %d: %s\n", client_id, message);
-
     char sem_continue1_name[BUFFER_SIZE], sem_continue2_name[BUFFER_SIZE];
     snprintf(sem_continue1_name, sizeof(sem_continue1_name), SEM_CONTINUE_TEMPLATE, server_name, 0);
     snprintf(sem_continue2_name, sizeof(sem_continue2_name), SEM_CONTINUE_TEMPLATE, server_name, 1);
@@ -192,8 +181,7 @@ void handle_client_message(int client_id, const char *message, const char *serve
     sem_t *sem_continue2 = sem_open(sem_continue2_name, O_RDWR);
 
     if (strncmp(message, "SEND_BOARD", 10) == 0) {
-        char *encoded_board = message + 11;// Skip "SEND_BOARD "
-        printf("%s\n", encoded_board);
+        char *encoded_board = message + 11;
         GameBoard *board = &game_data->board_players[client_id];
 
         // Decode the board: Replace 'A' with 0 and 'B' with 1
@@ -229,7 +217,6 @@ void handle_client_message(int client_id, const char *message, const char *serve
 
             // Check for game over condition
             if (result == 2) { // All ships sunk
-                printf("SERVER SUNK\n");
                 send_message_to_client(client_id, server_name, "GAME_OVER_W"); // Attacking player wins
                 sem_wait(client_id == 0 ? sem_continue1 : sem_continue2);
                 send_message_to_client(opponent_id, server_name, "GAME_OVER_L"); // Opponent loses
@@ -284,7 +271,6 @@ void run_server(const char *server_name) {
             int client_id;
             char message[BUFFER_SIZE];
             if (strncmp(buffer, "CONNECT", 7) == 0) {
-                printf("server\n");
                 pthread_mutex_lock(&game_mutex);
 
                 if (connected_clients < MAX_CLIENTS) {
@@ -294,8 +280,6 @@ void run_server(const char *server_name) {
                     // Assign a new client ID and send it to the client
                     snprintf(response, sizeof(response), "CLIENT_ID:%d", new_client_id);
                     send_message_to_client(new_client_id, server_name, response);
-
-                    printf("Server: Assigned ID %d to new client\n", new_client_id);
 
                     // Update game data for connected clients
                     if (new_client_id == 0) {
